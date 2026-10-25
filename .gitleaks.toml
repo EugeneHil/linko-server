@@ -1,0 +1,9 @@
+title = "linko gitleaks config"
+
+[extend]
+useDefault = true
+
+# No path allowlist: a real secret copied into an example config must still be caught.
+[allowlist]
+description = "Obvious placeholders in committed example configs"
+stopwords = ["changeme", "placeholder", "your-token-here", "example-only"]
