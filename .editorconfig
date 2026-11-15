@@ -1,0 +1,21 @@
+# linko-server editor defaults (https://editorconfig.org), shared with the
+# other linko repositories.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{c,cc,cpp,cppm,h,hpp,ipp,py}]
+indent_style = space
+indent_size = 4
+
+[*.{cmake,json,yaml,yml,sh}]
+indent_style = space
+indent_size = 2
+
+[CMakeLists.txt]
+indent_style = space
+indent_size = 2

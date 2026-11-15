@@ -1,0 +1,3 @@
+[submodule "external/linko-core"]
+	path = external/linko-core
+	url = https://github.com/EugeneHil/linko-core.git

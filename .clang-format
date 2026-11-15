@@ -1,0 +1,4 @@
+# linko-server C++ formatting: LLVM style with 4-space indentation (shared
+# with linko-core so patches read the same in every repo).
+BasedOnStyle: LLVM
+IndentWidth: 4
