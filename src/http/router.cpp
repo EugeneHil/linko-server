@@ -5,13 +5,17 @@
 namespace server {
 namespace {
 
-// The routing key of a request: method plus the path without its query.
+constexpr int kStatusNotFound = 404;
+constexpr int kStatusMethodNotAllowed = 405;
+
+// The routing key of a request: method plus the path without its query;
+// the (method, target) order is fixed by the interface in the plan.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 auto routeKey(const std::string &method, const std::string &target)
     -> std::string {
     const auto queryStart = target.find('?');
-    const auto path = queryStart == std::string::npos
-                          ? target
-                          : target.substr(0, queryStart);
+    const auto path =
+        queryStart == std::string::npos ? target : target.substr(0, queryStart);
     return method + " " + path;
 }
 
@@ -39,10 +43,13 @@ auto Router::dispatch(const HttpRequest &request) const -> HttpResponse {
     const auto path = pathOf(request.target);
     for (const auto &knownPath : knownPaths_) {
         if (knownPath == path) {
-            return {405, "{\"error\":\"method_not_allowed\"}"};
+            return {
+                kStatusMethodNotAllowed,
+                R"({"error":"method_not_allowed"})",
+            };
         }
     }
-    return {404, "{\"error\":\"not_found\"}"};
+    return {kStatusNotFound, R"({"error":"not_found"})"};
 }
 
 } // namespace server

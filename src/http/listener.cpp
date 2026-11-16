@@ -15,17 +15,17 @@
 
 namespace server {
 
-namespace beast = boost::beast;     // from <boost/beast.hpp>
-namespace http = beast::http;       // from <boost/beast/http.hpp>
-namespace asio = boost::asio;       // from <boost/asio.hpp>
-namespace ssl = asio::ssl;          // from <boost/asio/ssl.hpp>
-using tcp = asio::ip::tcp;          // from <boost/asio/ip/tcp.hpp>
+namespace beast = boost::beast; // from <boost/beast.hpp>
+namespace http = beast::http;   // from <boost/beast/http.hpp>
+namespace asio = boost::asio;   // from <boost/asio.hpp>
+namespace ssl = asio::ssl;      // from <boost/asio/ssl.hpp>
+using asio::ip::tcp;            // from <boost/asio/ip/tcp.hpp>
 
 namespace {
 
 // Request bodies above this are rejected (design spec 4.5: frames <= 64 KiB
 // applies to HTTP bodies the same way it applies to WebSocket frames).
-constexpr std::size_t kMaxRequestBodyBytes = 64 * 1024;
+constexpr std::size_t kMaxRequestBodyBytes = 64UL * 1024UL;
 
 } // namespace
 
@@ -45,10 +45,9 @@ class Listener::Session : public std::enable_shared_from_this<Session> {
     }
 
     void start() {
-        stream_.async_handshake(
-            ssl::stream_base::server,
-            beast::bind_front_handler(&Session::onHandshake,
-                                      shared_from_this()));
+        stream_.async_handshake(ssl::stream_base::server,
+                                beast::bind_front_handler(&Session::onHandshake,
+                                                          shared_from_this()));
     }
 
   private:
@@ -58,9 +57,9 @@ class Listener::Session : public std::enable_shared_from_this<Session> {
         }
         parser_ = std::make_shared<http::request_parser<http::string_body>>();
         parser_->body_limit(kMaxRequestBodyBytes);
-        http::async_read(stream_, buffer_, *parser_,
-                         beast::bind_front_handler(&Session::onRead,
-                                                   shared_from_this()));
+        http::async_read(
+            stream_, buffer_, *parser_,
+            beast::bind_front_handler(&Session::onRead, shared_from_this()));
     }
 
     void onRead(beast::error_code errorCode, std::size_t /*bytesTransferred*/) {
@@ -74,9 +73,8 @@ class Listener::Session : public std::enable_shared_from_this<Session> {
         request.method = received.method_string();
         request.target = received.target();
         request.body = received.body();
-        if (received.find(http::field::authorization) != received.end()) {
-            request.authorization =
-                received.at(http::field::authorization);
+        if (received.contains(http::field::authorization)) {
+            request.authorization = received.at(http::field::authorization);
         }
         request.address = address_;
 
@@ -97,16 +95,17 @@ class Listener::Session : public std::enable_shared_from_this<Session> {
         http::async_write(
             stream_, *message,
             [self, message](beast::error_code writeError,
-                            std::size_t /*bytesTransferred*/) {
+                            std::size_t /*bytesTransferred*/) -> void {
                 if (writeError) {
                     return;
                 }
-                // Graceful TLS shutdown ends the one-request connection.
-                // The shutdown continuation owns the session: releasing it
-                // here is what destroys stream_ - without the capture the
-                // session would die while the shutdown op is still pending.
+                // Graceful TLS shutdown ends the one-request
+                // connection. The shutdown continuation owns the
+                // session: releasing it here is what destroys
+                // stream_ - without the capture the session would
+                // die while the shutdown op is still pending.
                 self->stream_.async_shutdown(
-                    [self](const beast::error_code &) {});
+                    [self](const beast::error_code &) -> void {});
             });
     }
 
@@ -140,7 +139,7 @@ void Listener::doAccept() {
     // session) on its own strand.
     acceptor_->async_accept(
         asio::make_strand(ioContext_),
-        [this](beast::error_code errorCode, tcp::socket socket) {
+        [this](beast::error_code errorCode, tcp::socket socket) -> void {
             if (!errorCode) {
                 auto session = std::make_shared<Session>(std::move(socket),
                                                          sslContext_, router_);

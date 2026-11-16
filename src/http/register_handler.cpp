@@ -19,20 +19,22 @@ namespace {
 constexpr std::size_t kMaxUsernameLength = 32;
 constexpr std::size_t kTokenBytes = 32;
 
+constexpr int kStatusBadRequest = 400;
+constexpr int kStatusForbidden = 403;
+constexpr int kStatusCreated = 201;
+constexpr int kStatusServerError = 500;
+constexpr int kStatusTooManyAttempts = 429;
+
 auto isValidUsername(const std::string &name) -> bool {
     if (name.empty() || name.size() > kMaxUsernameLength) {
         return false;
     }
-    for (const char character : name) {
-        const bool allowed = (character >= 'a' && character <= 'z') ||
-                             (character >= '0' && character <= '9') ||
-                             character == '_' || character == '.' ||
-                             character == '-';
-        if (!allowed) {
-            return false;
-        }
-    }
-    return true;
+    const auto allowed = [](char character) -> bool {
+        return (character >= 'a' && character <= 'z') ||
+               (character >= '0' && character <= '9') || character == '_' ||
+               character == '.' || character == '-';
+    };
+    return std::all_of(name.begin(), name.end(), allowed);
 }
 
 auto jsonError(int status, const std::string &code) -> HttpResponse {
@@ -47,22 +49,22 @@ auto handleRegister(Store &store, Throttle &throttle,
     // failed-auth throttling per address); successes are rare in v0.1's
     // two-device world, so a shared budget keeps the rule simple.
     if (!throttle.allow(request.address)) {
-        return jsonError(429, "too_many_attempts");
+        return jsonError(kStatusTooManyAttempts, "too_many_attempts");
     }
 
     nlohmann::json parsed = nlohmann::json::parse(request.body, nullptr, false);
     if (parsed.is_discarded() || !parsed.is_object() ||
         !parsed.contains("code") || !parsed.contains("username") ||
         !parsed.at("code").is_string() || !parsed.at("username").is_string()) {
-        return jsonError(400, "invalid_request");
+        return jsonError(kStatusBadRequest, "invalid_request");
     }
     const auto code = parsed.at("code").get<std::string>();
     const auto username = parsed.at("username").get<std::string>();
     if (!isValidUsername(username)) {
-        return jsonError(400, "invalid_username");
+        return jsonError(kStatusBadRequest, "invalid_username");
     }
     if (store.consumeInvite(code, username) != InviteResult::Ok) {
-        return jsonError(403, "invalid_invite");
+        return jsonError(kStatusForbidden, "invalid_invite");
     }
 
     const auto token = randomHex(kTokenBytes);
@@ -74,13 +76,17 @@ auto handleRegister(Store &store, Throttle &throttle,
             std::chrono::system_clock::now().time_since_epoch())
             .count());
     if (result.device.id == 0) {
-        return jsonError(500, "registration_failed");
+        return jsonError(kStatusServerError, "registration_failed");
     }
-    return {201,
-            nlohmann::json{{"user", username},
-                           {"device", result.device.id},
-                           {"token", token}}
-                .dump()};
+    return {
+        kStatusCreated,
+        nlohmann::json{
+            {"user", username},
+            {"device", result.device.id},
+            {"token", token},
+        }
+            .dump(),
+    };
 }
 
 } // namespace server

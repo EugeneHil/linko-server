@@ -27,13 +27,17 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 namespace asio = boost::asio;
 namespace ssl = asio::ssl;
-using tcp = asio::ip::tcp;
+using asio::ip::tcp;
 
 namespace {
 
 constexpr std::int64_t kBaseMs = 1790000000000;
 constexpr std::int64_t kSecondMs = 1000;
 constexpr int kThrottleLimit = 3; // register attempts per minute in tests
+constexpr std::int64_t kMinuteOneSecondMs = 61 * kSecondMs;
+constexpr int kHttpVersion11 = 11;
+constexpr std::int64_t kInviteTtlSeconds = 3600;
+constexpr std::size_t kPlainReadBufferBytes = 512;
 
 // A fixed clock moved explicitly by the test.
 class FakeClock {
@@ -60,14 +64,18 @@ auto freshDbPath(const std::string &name) -> std::string {
 
 // One HTTPS request-response exchange against 127.0.0.1:port. Certificate
 // verification is off (the server presents an ephemeral self-signed cert).
-auto httpsRequest(const std::string &host, unsigned short port,
-                  const std::string &method, const std::string &target,
-                  const std::string &body = {},
-                  const std::string &authorization = {})
-    -> std::pair<int, std::string> {
-    const auto verb = method == "GET" ? http::verb::get
-                      : method == "POST" ? http::verb::post
-                                         : http::verb::head;
+// The (host, method, target) order mirrors every call site below.
+auto httpsRequest(
+    const std::string &host, unsigned short port,
+    const std::string &method, // NOLINT(bugprone-easily-swappable-parameters)
+    const std::string &target, const std::string &body = {},
+    const std::string &authorization = {}) -> std::pair<int, std::string> {
+    http::verb verb = http::verb::head;
+    if (method == "GET") {
+        verb = http::verb::get;
+    } else if (method == "POST") {
+        verb = http::verb::post;
+    }
     asio::io_context clientIo;
     ssl::context clientContext{ssl::context::tls_client};
     clientContext.set_verify_mode(ssl::verify_none);
@@ -78,7 +86,7 @@ auto httpsRequest(const std::string &host, unsigned short port,
     asio::connect(stream.next_layer(), endpoints);
     stream.handshake(ssl::stream_base::client);
 
-    http::request<http::string_body> request{verb, target, 11};
+    http::request<http::string_body> request{verb, target, kHttpVersion11};
     if (!body.empty()) {
         request.body() = body;
     }
@@ -104,21 +112,20 @@ class HttpFixture {
           store_(std::make_unique<server::Store>(
               dbPath_, []() -> std::string { return "TESTCODE"; },
               [this]() -> std::int64_t { return clock_.tick(); })),
-          throttle_(kThrottleLimit, [this]() -> std::int64_t {
-              return clock_.tick();
-          }) {
+          throttle_(kThrottleLimit,
+                    [this]() -> std::int64_t { return clock_.tick(); }) {
         sslContext_.use_certificate_chain_file(paths_.first);
         sslContext_.use_private_key_file(paths_.second, ssl::context::pem);
         store_->migrate();
-        router_.add("POST", "/api/v1/register",
-                    [this](const server::HttpRequest &request) {
-                        return server::handleRegister(*store_, throttle_,
-                                                      request);
-                    });
-        listener_ = std::make_unique<server::Listener>(io_, sslContext_,
-                                                       router_);
+        router_.add(
+            "POST", "/api/v1/register",
+            [this](const server::HttpRequest &request) -> server::HttpResponse {
+                return server::handleRegister(*store_, throttle_, request);
+            });
+        listener_ =
+            std::make_unique<server::Listener>(io_, sslContext_, router_);
         listener_->listen("127.0.0.1", 0);
-        ioThread_ = std::thread([this] { io_.run(); });
+        ioThread_ = std::thread([this]() -> void { io_.run(); });
     }
 
     ~HttpFixture() {
@@ -136,7 +143,7 @@ class HttpFixture {
     // Registers an invite directly so tests exercise the endpoint's
     // consume path rather than invite creation.
     void seedInvite(const std::string &username) {
-        static_cast<void>(store_->createInvite(username, 3600));
+        static_cast<void>(store_->createInvite(username, kInviteTtlSeconds));
     }
 
   private:
@@ -165,9 +172,9 @@ TEST(Http, RegisterRoundtripAndDeviceCanAuthenticate) {
     // The code is a store-generated secret; for the endpoint test the
     // injected generator produced a known value only via db... - instead,
     // consume semantics are exercised through a second registration below.
-    const auto [status, body] = httpsRequest(
-        "127.0.0.1", fixture.port(), "POST", "/api/v1/register",
-        R"({"code": "TESTCODE", "username": "anna"})");
+    const auto [status, body] =
+        httpsRequest("127.0.0.1", fixture.port(), "POST", "/api/v1/register",
+                     R"({"code": "TESTCODE", "username": "anna"})");
     EXPECT_EQ(status, 201) << body;
     const auto parsed = parseJson(body);
     ASSERT_FALSE(parsed.is_discarded()) << "body=[" << body << "]";
@@ -177,10 +184,12 @@ TEST(Http, RegisterRoundtripAndDeviceCanAuthenticate) {
 
     // The returned token authenticates: its SHA-256 hash resolves a device.
     const auto token = parsed.value("token", "");
-    const auto tokenHash = linko::sha256Hex(std::vector<std::uint8_t>(
-        token.begin(), token.end()));
+    const auto tokenHash =
+        linko::sha256Hex(std::vector<std::uint8_t>(token.begin(), token.end()));
     const auto device = fixture.store().deviceByTokenHash(tokenHash);
-    ASSERT_TRUE(device.has_value());
+    if (!device.has_value()) {
+        FAIL() << "the returned token must authenticate";
+    }
     EXPECT_EQ(device->user, "anna");
 }
 
@@ -194,9 +203,9 @@ TEST(Http, RegisterRejectsMalformedJson) {
 
 TEST(Http, RegisterBadInvite403) {
     HttpFixture fixture("bad-invite");
-    const auto [status, body] = httpsRequest(
-        "127.0.0.1", fixture.port(), "POST", "/api/v1/register",
-        R"({"code": "WRONG", "username": "anna"})");
+    const auto [status, body] =
+        httpsRequest("127.0.0.1", fixture.port(), "POST", "/api/v1/register",
+                     R"({"code": "WRONG", "username": "anna"})");
     EXPECT_EQ(status, 403) << body;
     EXPECT_NE(body.find("invalid_invite"), std::string::npos);
 }
@@ -204,9 +213,9 @@ TEST(Http, RegisterBadInvite403) {
 TEST(Http, RegisterBadUsername400) {
     HttpFixture fixture("bad-user");
     fixture.seedInvite("Bad User!");
-    const auto [status, body] = httpsRequest(
-        "127.0.0.1", fixture.port(), "POST", "/api/v1/register",
-        R"({"code": "TESTCODE", "username": "Bad User!"})");
+    const auto [status, body] =
+        httpsRequest("127.0.0.1", fixture.port(), "POST", "/api/v1/register",
+                     R"({"code": "TESTCODE", "username": "Bad User!"})");
     EXPECT_EQ(status, 400) << body;
     EXPECT_NE(body.find("invalid_username"), std::string::npos);
 }
@@ -224,7 +233,7 @@ TEST(Http, ThrottledAfterRepeatedFailures) {
     EXPECT_EQ(status, 429) << body;
     EXPECT_NE(body.find("too_many_attempts"), std::string::npos);
     // The window slides: after a minute the address may try again.
-    fixture.clock().advance(61 * kSecondMs);
+    fixture.clock().advance(kMinuteOneSecondMs);
     const auto [laterStatus, laterBody] = httpsRequest(
         "127.0.0.1", fixture.port(), "POST", "/api/v1/register", payload);
     EXPECT_EQ(laterStatus, 403) << laterBody;
@@ -232,16 +241,16 @@ TEST(Http, ThrottledAfterRepeatedFailures) {
 
 TEST(Http, UnknownPath404) {
     HttpFixture fixture("unknown");
-    const auto [status, body] = httpsRequest("127.0.0.1", fixture.port(),
-                                             "GET", "/api/v1/nothing");
+    const auto [status, body] =
+        httpsRequest("127.0.0.1", fixture.port(), "GET", "/api/v1/nothing");
     EXPECT_EQ(status, 404) << body;
     EXPECT_NE(body.find("not_found"), std::string::npos);
 }
 
 TEST(Http, WrongMethod405) {
     HttpFixture fixture("wrong-method");
-    const auto [status, body] = httpsRequest("127.0.0.1", fixture.port(),
-                                             "GET", "/api/v1/register");
+    const auto [status, body] =
+        httpsRequest("127.0.0.1", fixture.port(), "GET", "/api/v1/register");
     EXPECT_EQ(status, 405) << body;
     EXPECT_NE(body.find("method_not_allowed"), std::string::npos);
 }
@@ -252,9 +261,9 @@ TEST(Http, RequestLogStripsQuery) {
     std::string captured;
     server::setLogSink(
         [&captured](const std::string &line) -> void { captured = line; });
-    static_cast<void>(httpsRequest("127.0.0.1", fixture.port(), "POST",
-                                   "/api/v1/register?utm=leak",
-                                   R"({"code": "TESTCODE", "username": "anna"})"));
+    static_cast<void>(httpsRequest(
+        "127.0.0.1", fixture.port(), "POST", "/api/v1/register?utm=leak",
+        R"({"code": "TESTCODE", "username": "anna"})"));
     server::setLogSink(nullptr);
     EXPECT_NE(captured.find("POST /api/v1/register 201"), std::string::npos)
         << captured;
@@ -272,20 +281,17 @@ TEST(Http, TlsOnlyListener) {
         resolver.resolve("127.0.0.1", std::to_string(fixture.port()));
     asio::connect(socket, endpoints);
     beast::error_code ignored;
-    static_cast<void>(asio::write(socket, asio::buffer("GET / HTTP/1.0\r\n\r\n"),
-                                  ignored));
+    static_cast<void>(
+        asio::write(socket, asio::buffer("GET / HTTP/1.0\r\n\r\n"), ignored));
     std::string answer;
-    try {
-        std::array<char, 512> buffer{};
-        for (;;) {
-            const auto bytes = socket.read_some(asio::buffer(buffer), ignored);
-            if (ignored || bytes == 0) {
-                break;
-            }
-            answer.append(buffer.data(), bytes);
+    std::array<char, kPlainReadBufferBytes> buffer{};
+    boost::system::error_code readError = asio::error::would_block;
+    while (!readError) {
+        const auto bytes = socket.read_some(asio::buffer(buffer), readError);
+        if (readError || bytes == 0) {
+            break; // EOF or reset: the server dropped the non-TLS peer
         }
-    } catch (const boost::system::system_error &) {
-        // Connection reset / EOF: the server dropped the non-TLS peer.
+        answer.append(buffer.data(), bytes);
     }
     EXPECT_EQ(answer.find("HTTP/"), std::string::npos)
         << "a plain HTTP request must not receive an HTTP response";

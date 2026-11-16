@@ -4,7 +4,9 @@
 namespace server {
 namespace {
 
-constexpr std::int64_t kWindowMs = 60 * 1000;
+constexpr std::int64_t kWindowSeconds = 60;
+constexpr std::int64_t kMsPerSecond = 1000;
+constexpr std::int64_t kWindowMs = kWindowSeconds * kMsPerSecond;
 
 } // namespace
 
@@ -12,7 +14,7 @@ Throttle::Throttle(int perMinute, Clock nowMs)
     : perMinute_(perMinute), nowMs_(std::move(nowMs)) {}
 
 auto Throttle::allow(const std::string &key) -> bool {
-    const std::lock_guard<std::mutex> lock(mutex_);
+    const std::scoped_lock<std::mutex> lock(mutex_);
     const std::int64_t now = nowMs_();
     auto &window = attempts_[key];
     while (!window.empty() && window.front() <= now - kWindowMs) {

@@ -26,8 +26,10 @@ struct HttpRequest {
     std::string address;       // client address, e.g. "127.0.0.1"
 };
 
+inline constexpr int kDefaultHttpStatus = 200;
+
 struct HttpResponse {
-    int status = 200;
+    int status = kDefaultHttpStatus;
     std::string body;
 
     auto operator==(const HttpResponse &other) const -> bool {

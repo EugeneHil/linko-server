@@ -129,7 +129,7 @@ auto handleRun(const std::string &configPath) -> int {
     });
     Router router;
     router.add("POST", "/api/v1/register",
-               [&store, &throttle](const HttpRequest &request) {
+               [&store, &throttle](const HttpRequest &request) -> HttpResponse {
                    return handleRegister(*store, throttle, request);
                });
 
