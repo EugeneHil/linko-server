@@ -19,5 +19,10 @@ endfunction()
 linko_add_test(server_smoke test_smoke.cpp)
 linko_add_test(server_config test_config.cpp)
 linko_add_test(server_store test_store.cpp)
+linko_add_test(server_crypto test_crypto.cpp)
+linko_add_test(server_cli test_cli.cpp)
+# The crypto and CLI suites include the header-only test_cert helper.
+target_include_directories(server_crypto PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(server_cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # The config suite loads the committed example file by absolute path.
 target_compile_definitions(server_config PRIVATE LINKO_REPO_ROOT="${CMAKE_SOURCE_DIR}")

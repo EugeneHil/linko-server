@@ -25,14 +25,31 @@ auto writeTempConfig(const std::string &name, const std::string &body)
     return path.string();
 }
 
+// Portable environment helpers: ::setenv does not exist on Windows.
+void setEnv(const char *name, const char *value) {
+#ifdef _WIN32
+    ::_putenv_s(name, value);
+#else
+    ::setenv(name, value, 1);
+#endif
+}
+
+void unsetEnv(const char *name) {
+#ifdef _WIN32
+    ::_putenv_s(name, "");
+#else
+    ::unsetenv(name);
+#endif
+}
+
 // RAII env override so a failed assertion never leaks variables into other
 // suites in the same process.
 class ScopedEnv {
   public:
     ScopedEnv(const char *name, const char *value) : name_(name) {
-        ::setenv(name, value, 1);
+        setEnv(name, value);
     }
-    ~ScopedEnv() { ::unsetenv(name_.c_str()); }
+    ~ScopedEnv() { unsetEnv(name_.c_str()); }
     ScopedEnv(const ScopedEnv &) = delete;
     auto operator=(const ScopedEnv &) -> ScopedEnv & = delete;
 

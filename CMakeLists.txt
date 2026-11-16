@@ -17,6 +17,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # without a second copy in vcpkg.json.
 add_subdirectory(external/linko-core)
 
+# Vendored third-party sources (see vendor/qrcodegen/README.md): the
+# target is created before the warnings-as-errors block below takes
+# effect, so upstream code is not held to our lint rules.
+add_library(vendor_qrcodegen STATIC vendor/qrcodegen/qrcodegen.cpp)
+target_include_directories(vendor_qrcodegen SYSTEM PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/vendor/qrcodegen)
+
 # Warnings are errors on every compiler (CLAUDE.md, design spec 7).
 if(MSVC)
   add_compile_options(/W4 /WX)
@@ -36,12 +43,12 @@ find_package(SQLite3 REQUIRED)
 # >= 80 % of server logic) has a single target to measure. The executable
 # only wires the CLI entry point.
 add_library(server_lib STATIC src/cli.cpp src/config.cpp src/log.cpp
-                           src/store.cpp)
+                           src/store.cpp src/crypto.cpp)
 target_include_directories(server_lib
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_link_libraries(server_lib
   PUBLIC linko_core Boost::system OpenSSL::SSL OpenSSL::Crypto
-         SQLite::SQLite3)
+         SQLite::SQLite3 vendor_qrcodegen)
 
 add_executable(linko-server src/main.cpp)
 target_link_libraries(linko-server PRIVATE server_lib)
