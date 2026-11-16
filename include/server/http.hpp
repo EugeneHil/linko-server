@@ -139,6 +139,12 @@ class Router {
                                 std::int64_t size, const std::string &sha256Hex,
                                 std::int64_t nowMs) -> HttpResponse;
 
+// POST /api/v1/calls/{callId}/report (Bearer, Plan 3 Task 9): stores the
+// client's end-of-call quality summary verbatim; 204 on success, 400 for a
+// non-object or oversized (over 8 KiB) body, 404 for a malformed target.
+[[nodiscard]] auto handleCallReport(Store &store, const HttpRequest &request,
+                                    std::int64_t nowMs) -> HttpResponse;
+
 // TLS-only HTTPS listener: one Beast session per connection, each on its
 // own strand; request bodies are capped at 64 KiB; every completed request
 // goes through logRequest. Connections are closed after one response

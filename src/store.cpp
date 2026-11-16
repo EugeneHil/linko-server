@@ -144,6 +144,18 @@ CREATE TABLE files (
 );
 )";
 
+// Migration v4 (Plan 3 Task 9): end-of-call quality reports. The client's
+// summary JSON is stored verbatim; call_id/from_user/received_at are the
+// server-side facts (the report body carries none of them).
+constexpr const char *kMigrationV4 = R"(
+CREATE TABLE call_reports (
+  call_id TEXT NOT NULL,
+  from_user TEXT NOT NULL,
+  received_at INTEGER NOT NULL,
+  report_json TEXT NOT NULL
+);
+)";
+
 } // namespace
 
 Store::Store(const std::string &dbPath, CodeGen codeGen, Clock nowMs)
@@ -233,6 +245,10 @@ void Store::migrate() {
     if (current < 3) {
         applyStep(kMigrationV3, 3);
         current = 3;
+    }
+    if (current < 4) {
+        applyStep(kMigrationV4, 4);
+        current = 4;
     }
 }
 
@@ -622,6 +638,15 @@ constexpr int kBindFileSha256 = 4;
 constexpr int kBindFileCreatedAt = 5;
 constexpr int kBindFilePath = 6;
 
+constexpr int kColReportCallId = 0;
+constexpr int kColReportFrom = 1;
+constexpr int kColReportReceivedAt = 2;
+constexpr int kColReportJson = 3;
+constexpr int kBindReportCallId = 1;
+constexpr int kBindReportFrom = 2;
+constexpr int kBindReportReceivedAt = 3;
+constexpr int kBindReportJson = 4;
+
 auto readFileRow(const Statement &query) -> FileRow {
     FileRow row;
     row.id = query.columnText(kColFileId);
@@ -685,6 +710,35 @@ auto Store::quotaUsed(const std::string &user) const -> std::uint64_t {
     }
     const auto total = query.columnInt64(0);
     return total > 0 ? static_cast<std::uint64_t>(total) : 0;
+}
+
+auto readCallReportRow(const Statement &query) -> CallReportRow {
+    CallReportRow row;
+    row.callId = query.columnText(kColReportCallId);
+    row.fromUser = query.columnText(kColReportFrom);
+    row.receivedAt = query.columnInt64(kColReportReceivedAt);
+    row.reportJson = query.columnText(kColReportJson);
+    return row;
+}
+
+void Store::addCallReport(const CallReportRow &row) {
+    Statement insert(db_, "INSERT INTO call_reports (call_id, from_user,"
+                          " received_at, report_json) VALUES (?, ?, ?, ?)");
+    insert.bindText(kBindReportCallId, row.callId);
+    insert.bindText(kBindReportFrom, row.fromUser);
+    insert.bindInt64(kBindReportReceivedAt, row.receivedAt);
+    insert.bindText(kBindReportJson, row.reportJson);
+    static_cast<void>(insert.run());
+}
+
+auto Store::callReports() const -> std::vector<CallReportRow> {
+    Statement query(db_, "SELECT call_id, from_user, received_at, report_json"
+                         " FROM call_reports ORDER BY received_at, rowid");
+    std::vector<CallReportRow> rows;
+    while (query.step()) {
+        rows.push_back(readCallReportRow(query));
+    }
+    return rows;
 }
 
 } // namespace server

@@ -61,6 +61,16 @@ struct FileRow {
     std::string path;
 };
 
+// A stored end-of-call quality report row (migration v4): report_json is
+// the client's summary kept verbatim; the other columns are the server-side
+// facts (the report body carries none of them).
+struct CallReportRow {
+    std::string callId;
+    std::string fromUser;
+    std::int64_t receivedAt = 0; // epoch milliseconds
+    std::string reportJson;
+};
+
 class Store {
   public:
     // Produces the plaintext invite code (randomHex from LNK-17 in
@@ -186,6 +196,15 @@ class Store {
     // upload quota check's input.
     [[nodiscard]] auto quotaUsed(const std::string &user) const
         -> std::uint64_t;
+
+    // Records a call quality report row (migration v4 table). The report
+    // body was validated by the handler; it is stored verbatim. SQL
+    // failures are ignored like in the other void methods.
+    void addCallReport(const CallReportRow &row);
+
+    // All stored call reports, oldest first (received_at, then insertion
+    // order).
+    [[nodiscard]] auto callReports() const -> std::vector<CallReportRow>;
 
   private:
     // Runs a statement with no result rows; false on SQL failure.
