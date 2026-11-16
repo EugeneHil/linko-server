@@ -20,4 +20,20 @@ namespace server {
 // the file cannot be read or is not a PEM certificate.
 [[nodiscard]] auto spkiPinOfCertFile(const std::string &pemPath) -> std::string;
 
+// The generated pair on disk: certificate (world-readable) and private key
+// (owner-only).
+struct GeneratedCertPaths {
+    std::string certFile;
+    std::string keyFile;
+};
+
+// Generates a self-signed ECDSA P-256 certificate (CN=linko, valid 3650
+// days) and matching key into `outDir` as server.crt / server.key, creating
+// the directory if needed (Plan 3 Task 10). The key file is owner-only
+// (POSIX 0600; on Windows its DACL is rewritten to the owner alone - the
+// one allowed WinAPI use), the certificate is world-readable. Throws
+// std::runtime_error on I/O or OpenSSL failure.
+[[nodiscard]] auto generateSelfSignedCert(const std::string &outDir)
+    -> GeneratedCertPaths;
+
 } // namespace server
