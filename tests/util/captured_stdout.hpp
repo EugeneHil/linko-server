@@ -25,8 +25,7 @@ class CapturedStdout {
         std::fflush(stdout);
         path_ = std::string(::testing::TempDir()) + "capture-" + name + ".txt";
         saved_ = duplicate(fileNo(stdout));
-        if (saved_ == kInvalidFileNo ||
-            std::freopen(path_.c_str(), "w", stdout) == nullptr) {
+        if (saved_ == kInvalidFileNo || !redirectStdoutTo(path_)) {
             if (saved_ != kInvalidFileNo) {
                 closeFileNo(saved_);
             }
@@ -57,6 +56,19 @@ class CapturedStdout {
   private:
     using FileNo = int;
     static constexpr FileNo kInvalidFileNo = -1;
+
+    // MSVC deprecates freopen with C4996; freopen_s is the sanctioned
+    // spelling there - and the only possible one, since stdout is not an
+    // l-value: the FILE** out-parameter receives the reopened stream while
+    // the stdout stream itself is redirected in place.
+    static auto redirectStdoutTo(const std::string &path) -> bool {
+#if defined(_WIN32)
+        FILE *redirected = nullptr;
+        return freopen_s(&redirected, path.c_str(), "w", stdout) == 0;
+#else
+        return std::freopen(path.c_str(), "w", stdout) != nullptr;
+#endif
+    }
 
 #if defined(_WIN32)
     static auto fileNo(FILE *file) -> FileNo { return _fileno(file); }
