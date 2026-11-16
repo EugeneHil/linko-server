@@ -150,11 +150,19 @@ TEST(Cert, IsSelfSignedP256) {
 TEST(Cert, PinPrinted) {
     const std::string outDir = certOutDir("pin");
     const std::string certPath = pairPath(outDir, "crt");
-    test_util::CapturedStdout capture("pin");
-    EXPECT_EQ(runCli({"cert", "generate", "--out", outDir}), 0);
+    // Assert outside the capture scope: gtest failure text printed inside
+    // it would land in the capture file and never reach the CI log.
+    int exitCode = -1;
+    std::string output;
+    {
+        test_util::CapturedStdout capture("pin");
+        exitCode = runCli({"cert", "generate", "--out", outDir});
+        output = capture.content();
+    }
     const std::string pin = server::spkiPinOfCertFile(certPath);
+    EXPECT_EQ(exitCode, 0);
     EXPECT_FALSE(pin.empty());
-    EXPECT_NE(capture.content().find("pin: " + pin), std::string::npos);
+    EXPECT_NE(output.find("pin: " + pin), std::string::npos) << output;
 }
 
 TEST(Cert, GenerateWithoutValueForOutExits2) {

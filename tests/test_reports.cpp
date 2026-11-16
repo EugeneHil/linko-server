@@ -13,6 +13,7 @@
 #include <boost/asio/ssl.hpp>
 #include <boost/beast.hpp>
 #include <boost/beast/ssl.hpp>
+#include <nlohmann/json.hpp>
 
 #include "linko/sha256.hpp"
 #include "server/cli.hpp"
@@ -144,7 +145,11 @@ auto writeTempConfig(const std::string &name, const std::string &dataDir)
     const auto path = std::filesystem::path(::testing::TempDir()) /
                       ("linko-reports-" + name + ".json");
     std::ofstream output(path);
-    output << R"({"dataDir": ")" + dataDir + R"(", "port": 443})";
+    // nlohmann serializes the path with proper JSON escaping - a raw
+    // interpolation breaks on Windows, where the temp path contains
+    // backslashes ("C:\Users\..." is an invalid JSON escape).
+    const nlohmann::json config = {{"dataDir", dataDir}, {"port", 443}};
+    output << config.dump();
     output.close();
     return path.string();
 }
@@ -272,9 +277,14 @@ TEST(Reports, CliListPrintsRows) {
         });
     }
 
-    test_util::CapturedStdout capture("list");
-    EXPECT_EQ(runCli({"--config", fixture.configPath, "calls", "list"}), 0);
-    const auto output = capture.content();
+    int exitCode = -1;
+    std::string output;
+    {
+        test_util::CapturedStdout capture("list");
+        exitCode = runCli({"--config", fixture.configPath, "calls", "list"});
+        output = capture.content();
+    }
+    EXPECT_EQ(exitCode, 0);
     // Every column of both rows, pinned as the exact expected lines.
     const auto row1 = "call-1 anna " + std::to_string(kBaseMs) +
                       " duration=42 setupMs=7 candidate=relay "
@@ -302,10 +312,15 @@ TEST(Reports, CliShowPrintsReport) {
         });
     }
 
-    test_util::CapturedStdout capture("show");
-    EXPECT_EQ(
-        runCli({"--config", fixture.configPath, "calls", "show", "call-1"}), 0);
-    const auto output = capture.content();
+    int exitCode = -1;
+    std::string output;
+    {
+        test_util::CapturedStdout capture("show");
+        exitCode =
+            runCli({"--config", fixture.configPath, "calls", "show", "call-1"});
+        output = capture.content();
+    }
+    EXPECT_EQ(exitCode, 0);
     EXPECT_NE(output.find(kFullReport), std::string::npos)
         << "expected the stored report JSON in the output";
     EXPECT_EQ(output.find("host-z9"), std::string::npos)

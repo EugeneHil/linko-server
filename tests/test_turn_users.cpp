@@ -149,14 +149,17 @@ class TurnUsersFixture {
         const auto path = std::filesystem::path(::testing::TempDir()) /
                           ("linko-tu-" + name + ".json");
         std::ofstream output(path);
-        output << R"({"dataDir": ")" +
-                      (std::string(::testing::TempDir()) + "linko-tu-data") +
-                      R"(", "port": 443)";
+        // nlohmann serializes the path with proper JSON escaping - a raw
+        // interpolation breaks on Windows, where the temp path contains
+        // backslashes ("C:\Users\..." is an invalid JSON escape).
+        nlohmann::json config = {
+            {"dataDir", std::string(::testing::TempDir()) + "linko-tu-data"},
+            {"port", 443}};
         if (!fileTurnSecret.empty()) {
-            output << R"(, "turnSecret": ")" + fileTurnSecret + R"(")";
+            config["turnSecret"] = fileTurnSecret;
         }
-        output << R"(, "limits": {"turnTtlSec": )" +
-                      std::to_string(kTurnTtlSec) + R"(}})";
+        config["limits"] = {{"turnTtlSec", kTurnTtlSec}};
+        output << config.dump();
         output.close();
         return path.string();
     }
