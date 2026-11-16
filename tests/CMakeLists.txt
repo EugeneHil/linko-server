@@ -17,3 +17,7 @@ endfunction()
 # its own suites (smoke, envelope, ...) in the same CMake tree and target
 # names must not collide (CMP0002).
 linko_add_test(server_smoke test_smoke.cpp)
+linko_add_test(server_config test_config.cpp)
+linko_add_test(server_store test_store.cpp)
+# The config suite loads the committed example file by absolute path.
+target_compile_definitions(server_config PRIVATE LINKO_REPO_ROOT="${CMAKE_SOURCE_DIR}")

@@ -35,7 +35,8 @@ find_package(SQLite3 REQUIRED)
 # The server library: all logic lives here so the coverage gate (spec 7:
 # >= 80 % of server logic) has a single target to measure. The executable
 # only wires the CLI entry point.
-add_library(server_lib STATIC src/cli.cpp)
+add_library(server_lib STATIC src/cli.cpp src/config.cpp src/log.cpp
+                           src/store.cpp)
 target_include_directories(server_lib
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_link_libraries(server_lib
