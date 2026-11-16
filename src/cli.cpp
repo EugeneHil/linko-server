@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -17,6 +18,7 @@
 #include "server/call_registry.hpp"
 #include "server/config.hpp"
 #include "server/crypto.hpp"
+#include "server/file_store.hpp"
 #include "server/http.hpp"
 #include "server/log.hpp"
 #include "server/messaging.hpp"
@@ -38,6 +40,8 @@ constexpr int kExitUsage = 2;
 constexpr int kDefaultInviteTtlHours = 24;
 constexpr std::size_t kInviteCodeBytes = 16;
 constexpr std::int64_t kSecondsPerHour = 3600;
+// The TTL cleanup cadence (Plan 3 Task 8): once at startup, then daily.
+constexpr int kCleanupIntervalHours = 24;
 
 // UTF-8 half-block characters for the terminal QR code (upper half filled,
 // lower half filled, full block).
@@ -157,6 +161,37 @@ auto handleRun(const std::string &configPath) -> int {
     hub->setConnectHook([&messaging](const std::string &user) -> void {
         messaging->onConnect(user);
     });
+    // File storage (Plan 3 Task 8): the upload/download endpoints and the
+    // TTL cleanup - once at startup, then every 24 hours.
+    auto files = std::make_unique<FileStore>(config.dataDir);
+    cleanupExpiredFiles(
+        *store, *files, config.limits.fileTtlDays, []() -> std::int64_t {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::system_clock::now().time_since_epoch())
+                .count();
+        }());
+    auto cleanupTimer = std::make_shared<asio::steady_timer>(ioContext);
+    std::function<void()> armCleanup = [&]() -> void {
+        cleanupTimer->expires_after(std::chrono::hours(kCleanupIntervalHours));
+        cleanupTimer->async_wait(
+            [&store, &files, &config, &armCleanup,
+             cleanupTimer](const boost::system::error_code &error) -> void {
+                if (error) {
+                    return; // the io_context stopped: shutdown
+                }
+                cleanupExpiredFiles(
+                    *store, *files, config.limits.fileTtlDays,
+                    []() -> std::int64_t {
+                        return std::chrono::duration_cast<
+                                   std::chrono::milliseconds>(
+                                   std::chrono::system_clock::now()
+                                       .time_since_epoch())
+                            .count();
+                    }());
+                armCleanup();
+            });
+    };
+    armCleanup();
     WsHooks wsHooks;
     wsHooks.authenticate =
         [&store](const std::string &authorization) -> std::optional<Device> {
@@ -173,6 +208,11 @@ auto handleRun(const std::string &configPath) -> int {
                    std::chrono::system_clock::now().time_since_epoch())
             .count();
     };
+    UploadHooks uploadHooks;
+    uploadHooks.store = store.get();
+    uploadHooks.files = files.get();
+    uploadHooks.limits = config.limits;
+    uploadHooks.nowMs = wsHooks.nowMs;
 
     Router router;
     router.add("POST", "/api/v1/register",
@@ -187,8 +227,15 @@ auto handleRun(const std::string &configPath) -> int {
                [&config, &store](const HttpRequest &request) -> HttpResponse {
                    return handleTurn(config, *store, request);
                });
+    // GET /api/v1/files/{id}; PUT /api/v1/files is intercepted by the
+    // listener (the body streams, it is not dispatched through the router).
+    router.addPrefix(
+        "GET", "/api/v1/files/",
+        [&store, &files](const HttpRequest &request) -> HttpResponse {
+            return handleFileDownload(*store, *files, request);
+        });
 
-    Listener listener(ioContext, sslContext, router, &wsHooks);
+    Listener listener(ioContext, sslContext, router, &wsHooks, &uploadHooks);
     listener.listen(config.bind, static_cast<unsigned short>(config.port));
     logEvent("listening", config.bind + ":" + std::to_string(config.port));
     ioContext.run();

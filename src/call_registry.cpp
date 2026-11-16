@@ -25,9 +25,10 @@ constexpr std::int64_t kTimerQuantumMs = 100;
 
 } // namespace
 
-CallRegistry::CallRegistry(Hub &hub, const Limits & /*limits*/, Clock nowMs,
+CallRegistry::CallRegistry(Hub &hub, const Limits &limits, Clock nowMs,
                            asio::any_io_executor timers)
-    : hub_(hub), nowMs_(std::move(nowMs)), executor_(std::move(timers)) {}
+    : hub_(hub), limits_(limits), nowMs_(std::move(nowMs)),
+      executor_(std::move(timers)) {}
 
 void CallRegistry::onEnvelope(const std::string &fromUser,
                               const linko::Envelope &envelope,
@@ -52,6 +53,10 @@ void CallRegistry::onEnvelope(const std::string &fromUser,
         envelope.type == linko::kTypeCallIce ||
         envelope.type == linko::kTypeCallIceRestart ||
         envelope.type.rfind("file.", 0) == 0) {
+        if (envelope.type == linko::kTypeFileOffer &&
+            handleOfferCap(fromUser, envelope)) {
+            return;
+        }
         handlePassThrough(fromUser, envelope, wire);
     }
 }
@@ -202,6 +207,30 @@ void CallRegistry::handleLifecycle(const std::string &fromUser,
         call.connect.reset();
         static_cast<void>(calls_.erase(entry));
     }
+}
+
+// The file.offer size cap (Plan 3 Task 8): an offer above the limit never
+// reaches the callee - the sender gets session.error{code:"file_too_large"}
+// and nothing is forwarded. This also closes the Plan-2 wrap note: at the
+// 100 MiB cap, chunkCount = 6400 (16 KiB chunks), far below the uint32
+// chunk counter.
+auto CallRegistry::handleOfferCap(const std::string &fromUser,
+                                  const linko::Envelope &envelope) -> bool {
+    std::vector<linko::ValidationError> errors;
+    const auto offer = linko::FileOffer::fromBody(envelope.body, errors);
+    if (!offer.has_value()) {
+        return false; // malformed body: dropped (see the header comment)
+    }
+    if (offer->manifest.size <=
+        static_cast<std::uint64_t>(limits_.maxFileBytes)) {
+        return false;
+    }
+    sendEnvelope(
+        fromUser,
+        makeEnvelope(linko::kTypeSessionError,
+                     linko::SessionError{"file_too_large", ""}.toBody(),
+                     nowMs_()));
+    return true;
 }
 
 void CallRegistry::handlePassThrough(const std::string &fromUser,

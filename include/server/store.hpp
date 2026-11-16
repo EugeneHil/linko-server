@@ -50,6 +50,17 @@ struct RegisterResult {
     std::vector<std::int64_t> revokedDeviceIds;
 };
 
+// A stored file row (migration v3): the bytes live on disk under the
+// FileStore's directory (path), this row tracks the rest.
+struct FileRow {
+    std::string id;
+    std::string owner;
+    std::int64_t size = 0;
+    std::string sha256;
+    std::int64_t createdAt = 0; // epoch milliseconds
+    std::string path;
+};
+
 class Store {
   public:
     // Produces the plaintext invite code (randomHex from LNK-17 in
@@ -152,6 +163,29 @@ class Store {
                                   const std::string &holder,
                                   const std::string &counterpart) const
         -> std::pair<std::int64_t, std::int64_t>;
+
+    // Records an uploaded file row (migration v3 table). The bytes live on
+    // disk under the FileStore's directory; the row carries owner, size and
+    // digest for the quota check, the download digest header and the TTL
+    // cleanup. SQL failures are ignored like in the other void methods.
+    void addFile(const FileRow &row);
+
+    // The stored file row with this id; nullopt when unknown.
+    [[nodiscard]] auto fileInfo(const std::string &fileId) const
+        -> std::optional<FileRow>;
+
+    // Ids of the files created before `cutoffMs` (created_at < cutoffMs),
+    // in no particular order - the TTL cleanup's input.
+    [[nodiscard]] auto filesOlderThan(std::int64_t cutoffMs) const
+        -> std::vector<std::string>;
+
+    // Removes the file row; unknown ids are tolerated.
+    void deleteFile(const std::string &fileId);
+
+    // Sum of the user's stored file sizes in bytes (0 when none) - the
+    // upload quota check's input.
+    [[nodiscard]] auto quotaUsed(const std::string &user) const
+        -> std::uint64_t;
 
   private:
     // Runs a statement with no result rows; false on SQL failure.

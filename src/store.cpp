@@ -129,6 +129,21 @@ CREATE TABLE receipts (
 );
 )";
 
+// Migration v3 (Plan 3 Task 8): server-side file storage rows. The id is
+// the upload id (32 hex characters) and doubles as the disk file name under
+// the FileStore's directory; the row carries the quota/digest/cleanup
+// facts. The path column records where the bytes live.
+constexpr const char *kMigrationV3 = R"(
+CREATE TABLE files (
+  id TEXT NOT NULL PRIMARY KEY,
+  owner TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  path TEXT NOT NULL
+);
+)";
+
 } // namespace
 
 Store::Store(const std::string &dbPath, CodeGen codeGen, Clock nowMs)
@@ -189,36 +204,35 @@ void Store::migrate() {
     }
     // Each migration runs in its own transaction; a database created by an
     // older binary walks every pending step in order.
-    if (current < 1) {
+    const auto applyStep = [this](const char *sql,
+                                  std::int64_t version) -> void {
         if (!exec("BEGIN IMMEDIATE")) {
             throw std::runtime_error(
                 "store: cannot begin migration transaction");
         }
-        if (!exec(kMigrationV1) ||
-            !exec("INSERT INTO schema_version (version) VALUES (1)")) {
+        const auto markVersion =
+            "INSERT INTO schema_version (version) VALUES (" +
+            std::to_string(version) + ")";
+        if (!exec(sql) || !exec(markVersion.c_str())) {
             static_cast<void>(exec("ROLLBACK"));
-            throw std::runtime_error("store: migration v1 failed");
+            throw std::runtime_error("store: migration step failed");
         }
         if (!exec("COMMIT")) {
             static_cast<void>(exec("ROLLBACK"));
             throw std::runtime_error("store: migration commit failed");
         }
+    };
+    if (current < 1) {
+        applyStep(kMigrationV1, 1);
         current = 1;
     }
     if (current < 2) {
-        if (!exec("BEGIN IMMEDIATE")) {
-            throw std::runtime_error(
-                "store: cannot begin migration transaction");
-        }
-        if (!exec(kMigrationV2) ||
-            !exec("INSERT INTO schema_version (version) VALUES (2)")) {
-            static_cast<void>(exec("ROLLBACK"));
-            throw std::runtime_error("store: migration v2 failed");
-        }
-        if (!exec("COMMIT")) {
-            static_cast<void>(exec("ROLLBACK"));
-            throw std::runtime_error("store: migration commit failed");
-        }
+        applyStep(kMigrationV2, 2);
+        current = 2;
+    }
+    if (current < 3) {
+        applyStep(kMigrationV3, 3);
+        current = 3;
     }
 }
 
@@ -588,6 +602,89 @@ auto Store::receiptsOf(const std::string &conversation,
         return {0, 0};
     }
     return {query.columnInt64(0), query.columnInt64(1)};
+}
+
+// The files column indexes and the readFileRow helper shared by the file
+// statements.
+namespace {
+
+constexpr int kColFileId = 0;
+constexpr int kColFileOwner = 1;
+constexpr int kColFileSize = 2;
+constexpr int kColFileSha256 = 3;
+constexpr int kColFileCreatedAt = 4;
+constexpr int kColFilePath = 5;
+// The files INSERT parameter indexes.
+constexpr int kBindFileId = 1;
+constexpr int kBindFileOwner = 2;
+constexpr int kBindFileSize = 3;
+constexpr int kBindFileSha256 = 4;
+constexpr int kBindFileCreatedAt = 5;
+constexpr int kBindFilePath = 6;
+
+auto readFileRow(const Statement &query) -> FileRow {
+    FileRow row;
+    row.id = query.columnText(kColFileId);
+    row.owner = query.columnText(kColFileOwner);
+    row.size = query.columnInt64(kColFileSize);
+    row.sha256 = query.columnText(kColFileSha256);
+    row.createdAt = query.columnInt64(kColFileCreatedAt);
+    row.path = query.columnText(kColFilePath);
+    return row;
+}
+
+} // namespace
+
+void Store::addFile(const FileRow &row) {
+    Statement insert(db_,
+                     "INSERT INTO files (id, owner, size, sha256, created_at,"
+                     " path) VALUES (?, ?, ?, ?, ?, ?)");
+    insert.bindText(kBindFileId, row.id);
+    insert.bindText(kBindFileOwner, row.owner);
+    insert.bindInt64(kBindFileSize, row.size);
+    insert.bindText(kBindFileSha256, row.sha256);
+    insert.bindInt64(kBindFileCreatedAt, row.createdAt);
+    insert.bindText(kBindFilePath, row.path);
+    static_cast<void>(insert.run());
+}
+
+auto Store::fileInfo(const std::string &fileId) const
+    -> std::optional<FileRow> {
+    Statement query(db_, "SELECT id, owner, size, sha256, created_at, path FROM"
+                         " files WHERE id = ?");
+    query.bindText(1, fileId);
+    if (!query.step()) {
+        return std::nullopt;
+    }
+    return readFileRow(query);
+}
+
+auto Store::filesOlderThan(std::int64_t cutoffMs) const
+    -> std::vector<std::string> {
+    Statement query(db_, "SELECT id FROM files WHERE created_at < ?");
+    query.bindInt64(1, cutoffMs);
+    std::vector<std::string> ids;
+    while (query.step()) {
+        ids.push_back(query.columnText(kColFileId));
+    }
+    return ids;
+}
+
+void Store::deleteFile(const std::string &fileId) {
+    Statement remove(db_, "DELETE FROM files WHERE id = ?");
+    remove.bindText(1, fileId);
+    static_cast<void>(remove.run());
+}
+
+auto Store::quotaUsed(const std::string &user) const -> std::uint64_t {
+    Statement query(db_, "SELECT COALESCE(SUM(size), 0) FROM files"
+                         " WHERE owner = ?");
+    query.bindText(1, user);
+    if (!query.step()) {
+        return 0;
+    }
+    const auto total = query.columnInt64(0);
+    return total > 0 ? static_cast<std::uint64_t>(total) : 0;
 }
 
 } // namespace server
