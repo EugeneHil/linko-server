@@ -43,6 +43,7 @@ find_package(SQLite3 REQUIRED)
 # >= 80 % of server logic) has a single target to measure. The executable
 # only wires the CLI entry point.
 add_library(server_lib STATIC src/cli.cpp src/config.cpp src/log.cpp
+                           src/messaging.cpp
                            src/store.cpp src/crypto.cpp src/throttle.cpp
                            src/wire.cpp src/call_registry.cpp src/ws/hub.cpp src/ws/session.cpp
                            src/http/router.cpp src/http/listener.cpp

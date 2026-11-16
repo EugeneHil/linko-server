@@ -10,6 +10,8 @@
 
 #include <sqlite3.h>
 
+#include <nlohmann/json.hpp>
+
 #include "linko/sha256.hpp"
 
 namespace server {
@@ -100,6 +102,33 @@ CREATE TABLE devices (
 );
 )";
 
+// Migration v2 (Plan 3 Task 7): chat history and receipt watermarks. The
+// message id is client-generated (UUID) and globally unique - a PRIMARY KEY
+// on id makes replayed sends idempotent; UNIQUE(conv, seq) backstops the
+// per-conversation sequence.
+constexpr const char *kMigrationV2 = R"(
+CREATE TABLE messages (
+  id TEXT NOT NULL,
+  conv TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  sender TEXT NOT NULL,
+  recipient TEXT NOT NULL,
+  text TEXT NOT NULL,
+  file_json TEXT,
+  ts INTEGER NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE (conv, seq)
+);
+CREATE TABLE receipts (
+  conv TEXT NOT NULL,
+  holder TEXT NOT NULL,
+  counterpart TEXT NOT NULL,
+  delivered_upto INTEGER NOT NULL DEFAULT 0,
+  read_upto INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (conv, holder)
+);
+)";
+
 } // namespace
 
 Store::Store(const std::string &dbPath, CodeGen codeGen, Clock nowMs)
@@ -158,20 +187,38 @@ void Store::migrate() {
             current = query.columnInt64(0);
         }
     }
-    if (current >= 1) {
-        return;
+    // Each migration runs in its own transaction; a database created by an
+    // older binary walks every pending step in order.
+    if (current < 1) {
+        if (!exec("BEGIN IMMEDIATE")) {
+            throw std::runtime_error(
+                "store: cannot begin migration transaction");
+        }
+        if (!exec(kMigrationV1) ||
+            !exec("INSERT INTO schema_version (version) VALUES (1)")) {
+            static_cast<void>(exec("ROLLBACK"));
+            throw std::runtime_error("store: migration v1 failed");
+        }
+        if (!exec("COMMIT")) {
+            static_cast<void>(exec("ROLLBACK"));
+            throw std::runtime_error("store: migration commit failed");
+        }
+        current = 1;
     }
-    if (!exec("BEGIN IMMEDIATE")) {
-        throw std::runtime_error("store: cannot begin migration transaction");
-    }
-    if (!exec(kMigrationV1) ||
-        !exec("INSERT INTO schema_version (version) VALUES (1)")) {
-        static_cast<void>(exec("ROLLBACK"));
-        throw std::runtime_error("store: migration v1 failed");
-    }
-    if (!exec("COMMIT")) {
-        static_cast<void>(exec("ROLLBACK"));
-        throw std::runtime_error("store: migration commit failed");
+    if (current < 2) {
+        if (!exec("BEGIN IMMEDIATE")) {
+            throw std::runtime_error(
+                "store: cannot begin migration transaction");
+        }
+        if (!exec(kMigrationV2) ||
+            !exec("INSERT INTO schema_version (version) VALUES (2)")) {
+            static_cast<void>(exec("ROLLBACK"));
+            throw std::runtime_error("store: migration v2 failed");
+        }
+        if (!exec("COMMIT")) {
+            static_cast<void>(exec("ROLLBACK"));
+            throw std::runtime_error("store: migration commit failed");
+        }
     }
 }
 
@@ -350,6 +397,197 @@ auto Store::listDevices(const std::string &user) const -> std::vector<Device> {
         });
     }
     return devices;
+}
+
+auto Store::userExists(const std::string &user) const -> bool {
+    Statement query(db_, "SELECT 1 FROM users WHERE name = ?");
+    query.bindText(1, user);
+    return query.step();
+}
+
+// Reads one message row in the SELECT's column order.
+namespace {
+
+// The messages INSERT parameter indexes and the readMessageRow column
+// indexes shared by the message statements.
+constexpr int kColId = 0;
+constexpr int kColSender = 2;
+constexpr int kColRecipient = 3;
+constexpr int kColText = 4;
+constexpr int kColFileJson = 5;
+constexpr int kColSeq = 6;
+constexpr int kColTs = 7;
+
+// The messages INSERT parameter indexes.
+constexpr int kBindMessageId = 1;
+constexpr int kBindConv = 2;
+constexpr int kBindSeq = 3;
+constexpr int kBindSender = 4;
+constexpr int kBindRecipient = 5;
+constexpr int kBindText = 6;
+constexpr int kBindFileJson = 7;
+constexpr int kBindTs = 8;
+
+// The receipts UPSERT's fifth parameter.
+constexpr int kBindReadUpto = 5;
+
+auto readMessageRow(const Statement &query) -> linko::MessageRecord {
+    linko::MessageRecord record;
+    record.id = query.columnText(kColId);
+    record.from = query.columnText(kColSender);
+    record.to = query.columnText(kColRecipient);
+    record.text = query.columnText(kColText);
+    const auto fileJson = query.columnText(kColFileJson);
+    if (!fileJson.empty()) {
+        const auto parsed = nlohmann::json::parse(fileJson, nullptr, false);
+        if (!parsed.is_discarded()) {
+            std::vector<linko::ValidationError> errors;
+            record.file = linko::FileMeta::fromBody(parsed, errors);
+        }
+    }
+    record.seq = query.columnInt64(kColSeq);
+    record.ts = query.columnInt64(kColTs);
+    return record;
+}
+
+} // namespace
+
+auto conversationKey(const std::string &first, const std::string &second)
+    -> std::string {
+    constexpr char kSeparator = '\x1f';
+    return first < second ? first + kSeparator + second
+                          : second + kSeparator + first;
+}
+
+auto Store::storeMessage(linko::MessageRecord record)
+    -> std::optional<linko::MessageRecord> {
+    // Idempotent sends: the client-generated id decides. A duplicate stores
+    // nothing and returns nullopt; the caller replays via messageById
+    // (single connection + SQLITE_OPEN_FULLMUTEX serializes every
+    // statement, so no race between the two steps).
+    const auto conversation = conversationKey(record.from, record.to);
+    {
+        Statement existing(
+            db_, "SELECT id, conv, sender, recipient, text, file_json, seq,"
+                 " ts FROM messages WHERE id = ?");
+        existing.bindText(1, record.id);
+        if (existing.step()) {
+            return std::nullopt;
+        }
+    }
+    if (!exec("BEGIN IMMEDIATE")) {
+        return std::nullopt;
+    }
+    std::int64_t nextSeq = 1;
+    try {
+        Statement maxSeq(db_, "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages"
+                              " WHERE conv = ?");
+        maxSeq.bindText(1, conversation);
+        if (maxSeq.step()) {
+            nextSeq = maxSeq.columnInt64(0);
+        }
+    } catch (const std::exception &) {
+        static_cast<void>(exec("ROLLBACK"));
+        throw;
+    }
+
+    Statement insert(db_,
+                     "INSERT INTO messages (id, conv, seq, sender, recipient,"
+                     " text, file_json, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    insert.bindText(kBindMessageId, record.id);
+    insert.bindText(kBindConv, conversation);
+    insert.bindInt64(kBindSeq, nextSeq);
+    insert.bindText(kBindSender, record.from);
+    insert.bindText(kBindRecipient, record.to);
+    insert.bindText(kBindText, record.text);
+    if (record.file.has_value()) {
+        insert.bindText(kBindFileJson, record.file->toBody().dump());
+    } else {
+        insert.bindNull(kBindFileJson);
+    }
+    insert.bindInt64(kBindTs, nowMs_());
+    if (!insert.run() || !exec("COMMIT")) {
+        static_cast<void>(exec("ROLLBACK"));
+        return std::nullopt;
+    }
+
+    record.seq = nextSeq;
+    record.ts = nowMs_();
+    return record;
+}
+
+auto Store::messageById(const std::string &msgId) const
+    -> std::optional<linko::MessageRecord> {
+    Statement query(db_, "SELECT id, conv, sender, recipient, text,"
+                         " file_json, seq, ts FROM messages WHERE id = ?");
+    query.bindText(1, msgId);
+    if (!query.step()) {
+        return std::nullopt;
+    }
+    return readMessageRow(query);
+}
+
+auto Store::messagesAfter(const std::string &conversation,
+                          std::int64_t afterSeq) const
+    -> std::vector<linko::MessageRecord> {
+    Statement query(db_, "SELECT id, conv, sender, recipient, text,"
+                         " file_json, seq, ts FROM messages"
+                         " WHERE conv = ? AND seq > ? ORDER BY seq ASC");
+    query.bindText(1, conversation);
+    query.bindInt64(2, afterSeq);
+    std::vector<linko::MessageRecord> messages;
+    while (query.step()) {
+        messages.push_back(readMessageRow(query));
+    }
+    return messages;
+}
+
+auto Store::conversationsOf(const std::string &user) const
+    -> std::vector<std::string> {
+    Statement query(db_, "SELECT DISTINCT conv FROM messages"
+                         " WHERE sender = ? OR recipient = ?");
+    query.bindText(1, user);
+    query.bindText(2, user);
+    std::vector<std::string> conversations;
+    while (query.step()) {
+        conversations.push_back(query.columnText(0));
+    }
+    return conversations;
+}
+
+void Store::advanceReceipts(const std::string &conversation,
+                            const std::string &holder,
+                            const std::string &counterpart,
+                            std::int64_t deliveredUpto, std::int64_t readUpto) {
+    // The UPSERT keeps both watermarks monotonic: MAX(current, offered)
+    // ignores lower values, so a stale ack never regresses a receipt.
+    Statement upsert(db_, "INSERT INTO receipts (conv, holder, counterpart,"
+                          " delivered_upto, read_upto) VALUES (?, ?, ?, ?, ?)"
+                          " ON CONFLICT(conv, holder) DO UPDATE SET"
+                          " delivered_upto = MAX(delivered_upto,"
+                          " excluded.delivered_upto),"
+                          " read_upto = MAX(read_upto, excluded.read_upto)");
+    upsert.bindText(1, conversation);
+    upsert.bindText(2, holder);
+    upsert.bindText(3, counterpart);
+    upsert.bindInt64(4, deliveredUpto);
+    upsert.bindInt64(kBindReadUpto, readUpto);
+    static_cast<void>(upsert.run());
+}
+
+auto Store::receiptsOf(const std::string &conversation,
+                       const std::string &holder,
+                       const std::string &counterpart) const
+    -> std::pair<std::int64_t, std::int64_t> {
+    Statement query(db_, "SELECT delivered_upto, read_upto FROM receipts"
+                         " WHERE conv = ? AND holder = ? AND counterpart = ?");
+    query.bindText(1, conversation);
+    query.bindText(2, holder);
+    query.bindText(3, counterpart);
+    if (!query.step()) {
+        return {0, 0};
+    }
+    return {query.columnInt64(0), query.columnInt64(1)};
 }
 
 } // namespace server

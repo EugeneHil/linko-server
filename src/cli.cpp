@@ -19,6 +19,7 @@
 #include "server/crypto.hpp"
 #include "server/http.hpp"
 #include "server/log.hpp"
+#include "server/messaging.hpp"
 #include "server/store.hpp"
 #include "server/throttle.hpp"
 
@@ -135,7 +136,8 @@ auto handleRun(const std::string &configPath) -> int {
     });
     // The call registry (Plan 3 Task 6): one core state machine per call,
     // busy answers, ring timeouts, relay and socket-drop cleanup. The
-    // messaging sink stays null until Task 7 lands.
+    // messaging sink (Plan 3 Task 7): persistence, seq assignment, offline
+    // delivery and receipts.
     auto registry = std::make_unique<CallRegistry>(
         *hub, config.limits,
         []() -> std::int64_t {
@@ -144,7 +146,17 @@ auto handleRun(const std::string &configPath) -> int {
                 .count();
         },
         ioContext.get_executor());
-    auto msgSink = std::make_unique<NullSink>();
+    auto messaging =
+        std::make_unique<Messaging>(*store, *hub, []() -> std::int64_t {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::system_clock::now().time_since_epoch())
+                .count();
+        });
+    // Reconnects push the undelivered backlog (receipt-keyed); the hook
+    // fires outside the hub lock, so the push may send through the hub.
+    hub->setConnectHook([&messaging](const std::string &user) -> void {
+        messaging->onConnect(user);
+    });
     WsHooks wsHooks;
     wsHooks.authenticate =
         [&store](const std::string &authorization) -> std::optional<Device> {
@@ -154,7 +166,7 @@ auto handleRun(const std::string &configPath) -> int {
     };
     wsHooks.hub = hub.get();
     wsHooks.callSink = registry.get();
-    wsHooks.msgSink = msgSink.get();
+    wsHooks.msgSink = messaging.get();
     wsHooks.limits = config.limits;
     wsHooks.nowMs = []() -> std::int64_t {
         return std::chrono::duration_cast<std::chrono::milliseconds>(

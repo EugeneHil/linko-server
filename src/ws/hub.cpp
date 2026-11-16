@@ -13,6 +13,8 @@ namespace linko_ = linko; // alias for readability below
 
 Hub::Hub(Clock nowMs) : nowMs_(std::move(nowMs)) {}
 
+void Hub::setConnectHook(ConnectHook hook) { connectHook_ = std::move(hook); }
+
 void Hub::attach(const Device &device, WsSession *session) {
     WsSession *previous = nullptr;
     {
@@ -30,6 +32,11 @@ void Hub::attach(const Device &device, WsSession *session) {
         previous->close(kWsCloseAnotherSocket);
     }
     broadcastPresence(device.user, true);
+    // The connect hook runs last, outside the lock: the backlog push it
+    // performs queries the store and sends through this hub again.
+    if (connectHook_) {
+        connectHook_(device.user);
+    }
 }
 
 void Hub::detach(const Device &device, WsSession *session) {
