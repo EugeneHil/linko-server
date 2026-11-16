@@ -1,0 +1,130 @@
+# CI for linko-server (Plan 3 Task 11): builds and tests on the two product
+# platforms (Windows via vcpkg manifest, macOS via Homebrew), gates llvm-cov
+# line coverage of the server sources at the spec 7 threshold of 80 %, and
+# runs the lint checks from ci-local.sh. The macOS runners deliberately use
+# the same Homebrew LLVM as the developers: clang-tidy findings are
+# LLVM-version-sensitive, and a Linux lint job would need a vcpkg bootstrap
+# of boost 1.92 (apt ships 1.83, the configure requires 1.92). The gitleaks
+# workflow is separate and stays untouched.
+name: ci
+
+on:
+  pull_request:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+      - name: Cache vcpkg artifacts
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            build/windows/vcpkg_installed
+            ~/AppData/Local/vcpkg/archives
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+      - name: Configure, build and test
+        run: |
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          cmake --preset windows
+          cmake --build --preset windows
+          ctest --preset windows
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+      - name: Install Homebrew dependencies
+        run: brew install boost openssl@3 sqlite3
+      - name: Cache fetched test dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: build/macos/_deps
+          key: fetchcontent-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+      - name: Configure, build and test
+        run: |
+          cmake --preset macos
+          cmake --build --preset macos
+          ctest --preset macos
+
+  coverage:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+      - name: Install Homebrew dependencies
+        run: brew install boost openssl@3 sqlite3 llvm
+      - name: Cache fetched test dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: build/coverage/_deps
+          key: fetchcontent-${{ runner.os }}-coverage-${{ hashFiles('CMakeLists.txt') }}
+      - name: Coverage build and report
+        run: |
+          LLVM=/opt/homebrew/opt/llvm/bin
+          CC="$LLVM/clang" CXX="$LLVM/clang++" cmake --preset coverage
+          cmake --build --preset coverage
+          rm -f build/coverage/*.profraw build/coverage/coverage.profdata
+          ctest --preset coverage
+          "$LLVM/llvm-profdata" merge -sparse build/coverage/*.profraw \
+            -o build/coverage/coverage.profdata
+          # Same objects as ci-local.sh reports: one binary, every further
+          # suite as an extra -object.
+          exes=()
+          while IFS= read -r f; do exes+=("$f"); done \
+            < <(find build/coverage/tests -type f -perm -111 | sort)
+          cov_args=("${exes[0]}")
+          for exe in "${exes[@]:1}"; do cov_args+=(-object "$exe"); done
+          "$LLVM/llvm-cov" export "${cov_args[@]}" \
+            -instr-profile=build/coverage/coverage.profdata \
+            "$GITHUB_WORKSPACE/src" "$GITHUB_WORKSPACE/include" \
+            "$GITHUB_WORKSPACE/tests" --summary-only \
+            > build/coverage/summary.json
+          pct=$(jq '.data[0].totals.lines.covered * 100
+                    / .data[0].totals.lines.count' build/coverage/summary.json)
+          echo "line coverage: ${pct}% (gate: 80%)"
+          # jq -e exits non-zero when the expression evaluates to false.
+          jq -e '.data[0].totals.lines.count > 0 and
+                 .data[0].totals.lines.covered * 100
+                 / .data[0].totals.lines.count >= 80' \
+            build/coverage/summary.json > /dev/null
+
+  lint:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+      - name: Install Homebrew dependencies
+        run: brew install boost openssl@3 sqlite3 llvm
+      - name: Configure (compile database for clang-tidy)
+        run: cmake --preset macos
+      - name: clang-format and clang-tidy
+        run: |
+          LLVM=/opt/homebrew/opt/llvm/bin
+          mapfile -t sources \
+            < <(find include src tests -type f \
+                \( -name '*.cpp' -o -name '*.hpp' \) | sort)
+          "$LLVM/clang-format" --dry-run --Werror "${sources[@]}"
+          tidys=()
+          for f in "${sources[@]}"; do
+            case "$f" in *.cpp) tidys+=("$f") ;; esac
+          done
+          "$LLVM/clang-tidy" -p build/macos "${tidys[@]}"
