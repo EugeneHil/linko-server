@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdlib>
 #include <fstream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -25,10 +26,26 @@ constexpr std::array<const char *, 8> kKnownLimitKeys{
     "idleTimeoutSec",      "turnTtlSec",
 };
 
-// Empty environment variables count as unset.
-auto environmentValue(const char *name) -> const char * {
+// MSVC deprecates std::getenv (C4996, and warnings are errors); getenv_s is
+// the sanctioned spelling there. Empty environment variables count as unset.
+auto environmentValue(const char *name) -> std::optional<std::string> {
+#ifdef _WIN32
+    std::size_t needed = 0;
+    if (getenv_s(&needed, nullptr, 0, name) != 0 || needed == 0) {
+        return std::nullopt;
+    }
+    std::vector<char> buffer(needed);
+    if (getenv_s(&needed, buffer.data(), buffer.size(), name) != 0) {
+        return std::nullopt;
+    }
+    return std::string(buffer.data());
+#else
     const char *value = std::getenv(name);
-    return (value != nullptr && value[0] != '\0') ? value : nullptr;
+    if (value == nullptr || value[0] == '\0') {
+        return std::nullopt;
+    }
+    return std::string(value);
+#endif
 }
 
 [[noreturn]] void throwBadType(const std::string &key, const char *expected) {
@@ -143,30 +160,30 @@ void applyFileValues(const nlohmann::json &root, Config &config) {
 
 void applyEnvOverrides(Config &config) {
     // Environment wins over the file (design spec 4.5 "Config").
-    if (const char *value = environmentValue("LINKO_BIND")) {
-        config.bind = value;
+    if (const auto value = environmentValue("LINKO_BIND")) {
+        config.bind = *value;
     }
-    if (const char *value = environmentValue("LINKO_PORT")) {
+    if (const auto value = environmentValue("LINKO_PORT")) {
         try {
-            config.port = std::stoi(value);
+            config.port = std::stoi(*value);
         } catch (const std::exception &) {
             throw std::runtime_error("config: LINKO_PORT must be an integer");
         }
     }
-    if (const char *value = environmentValue("LINKO_DATA_DIR")) {
-        config.dataDir = value;
+    if (const auto value = environmentValue("LINKO_DATA_DIR")) {
+        config.dataDir = *value;
     }
-    if (const char *value = environmentValue("LINKO_TLS_CERT")) {
-        config.certFile = value;
+    if (const auto value = environmentValue("LINKO_TLS_CERT")) {
+        config.certFile = *value;
     }
-    if (const char *value = environmentValue("LINKO_TLS_KEY")) {
-        config.keyFile = value;
+    if (const auto value = environmentValue("LINKO_TLS_KEY")) {
+        config.keyFile = *value;
     }
-    if (const char *value = environmentValue("LINKO_TURN_SECRET")) {
-        config.turnSecret = value;
+    if (const auto value = environmentValue("LINKO_TURN_SECRET")) {
+        config.turnSecret = *value;
     }
-    if (const char *value = environmentValue("LINKO_PUBLIC_HOST")) {
-        config.publicHost = value;
+    if (const auto value = environmentValue("LINKO_PUBLIC_HOST")) {
+        config.publicHost = *value;
     }
 }
 

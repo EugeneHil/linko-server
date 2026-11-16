@@ -26,7 +26,12 @@ target_include_directories(vendor_qrcodegen SYSTEM PUBLIC
 
 # Warnings are errors on every compiler (CLAUDE.md, design spec 7).
 if(MSVC)
-  add_compile_options(/W4 /WX)
+  # /bigobj: the Beast/Asio-heavy translation units exceed the COFF section
+  # limit otherwise (first Windows build, LNK-25).
+  add_compile_options(/W4 /WX /bigobj)
+  # Boost.Asio requires _WIN32_WINNT to be defined; 0x0A00 is the Windows
+  # 10 floor the product targets (Windows Server 2016 and newer).
+  add_compile_definitions(_WIN32_WINNT=0x0A00)
 else()
   add_compile_options(-Wall -Wextra -Wpedantic -Werror)
 endif()
