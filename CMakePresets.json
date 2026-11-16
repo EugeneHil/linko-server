@@ -15,7 +15,9 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_PREFIX_PATH": "/opt/homebrew;/opt/homebrew/opt/openssl@3;/opt/homebrew/opt/sqlite"
+        "BOOST_ROOT": "/opt/homebrew/opt/boost",
+        "OPENSSL_ROOT_DIR": "/opt/homebrew/opt/openssl@3",
+        "CMAKE_PREFIX_PATH": "/opt/homebrew/opt/openssl@3;/opt/homebrew/opt/sqlite;/opt/homebrew"
       }
     },
     {
@@ -52,7 +54,9 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_PREFIX_PATH": "/opt/homebrew;/opt/homebrew/opt/openssl@3;/opt/homebrew/opt/sqlite",
+        "BOOST_ROOT": "/opt/homebrew/opt/boost",
+        "OPENSSL_ROOT_DIR": "/opt/homebrew/opt/openssl@3",
+        "CMAKE_PREFIX_PATH": "/opt/homebrew/opt/openssl@3;/opt/homebrew/opt/sqlite;/opt/homebrew",
         "CMAKE_CXX_FLAGS": "-fprofile-instr-generate -fcoverage-mapping"
       }
     }
