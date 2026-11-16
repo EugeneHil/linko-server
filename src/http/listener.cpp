@@ -1,10 +1,12 @@
-// Listener implementation (Plan 3 Task 4): TLS-only Beast accept loop, one
-// session per connection on its own strand, one request per connection,
-// every completed request logged.
+// Listener implementation (Plan 3 Task 4/5): TLS-only Beast accept loop,
+// one session per connection on its own strand, one HTTP request per
+// connection, and the GET /ws upgrade path into WebSocket sessions. Every
+// completed HTTP request is logged.
 #include "server/http.hpp"
 
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -12,6 +14,7 @@
 #include <boost/beast/ssl.hpp>
 
 #include "server/log.hpp"
+#include "server/ws_session.hpp"
 
 namespace server {
 
@@ -26,16 +29,21 @@ namespace {
 // Request bodies above this are rejected (design spec 4.5: frames <= 64 KiB
 // applies to HTTP bodies the same way it applies to WebSocket frames).
 constexpr std::size_t kMaxRequestBodyBytes = 64UL * 1024UL;
+constexpr int kStatusUnauthorized = 401;
 
 } // namespace
 
 // One HTTPS connection: handshake, read one request, dispatch, answer,
-// shutdown. Lives on a strand (the accept call passes one), so a future
-// multi-threaded io_context cannot interleave this session's handlers.
+// shutdown - or, for GET /ws, authenticate and hand the stream to a
+// WebSocket session. Lives on a strand (the accept call passes one), so a
+// future multi-threaded io_context cannot interleave this session's
+// handlers.
 class Listener::Session : public std::enable_shared_from_this<Session> {
   public:
-    Session(tcp::socket socket, ssl::context &sslContext, Router &router)
-        : stream_(std::move(socket), sslContext), router_(router) {
+    Session(tcp::socket socket, ssl::context &sslContext, Router &router,
+            const WsHooks *wsHooks)
+        : stream_(std::move(socket), sslContext), router_(router),
+          wsHooks_(wsHooks) {
         beast::error_code ignored;
         const auto endpoint =
             stream_.next_layer().socket().remote_endpoint(ignored);
@@ -62,7 +70,7 @@ class Listener::Session : public std::enable_shared_from_this<Session> {
             beast::bind_front_handler(&Session::onRead, shared_from_this()));
     }
 
-    void onRead(beast::error_code errorCode, std::size_t /*bytesTransferred*/) {
+    void onRead(beast::error_code errorCode, std::size_t /*bytes*/) {
         if (errorCode) {
             return;
         }
@@ -78,6 +86,10 @@ class Listener::Session : public std::enable_shared_from_this<Session> {
         }
         request.address = address_;
 
+        if (handleWebSocketUpgrade(request, received.version())) {
+            return; // the TLS stream was moved into the WebSocket session
+        }
+
         const HttpResponse response = router_.dispatch(request);
         const auto durationMs =
             std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -85,28 +97,59 @@ class Listener::Session : public std::enable_shared_from_this<Session> {
                 .count();
         logRequest(request.address, request.method, request.target,
                    response.status, durationMs);
+        respond(response, received.version());
+    }
 
+    // GET /ws: authenticate the bearer token, then hand the TLS stream to a
+    // WebSocket session (true = the stream was taken over and the HTTP path
+    // must stop). Returns false for non-WS targets.
+    auto handleWebSocketUpgrade(const HttpRequest &request,
+                                unsigned httpVersion) -> bool {
+        const auto queryStart = request.target.find('?');
+        const auto path = queryStart == std::string::npos
+                              ? request.target
+                              : request.target.substr(0, queryStart);
+        if (path != "/ws" || request.method != "GET") {
+            return false;
+        }
+        auto self = shared_from_this();
+        const auto device = wsHooks_ != nullptr
+                                ? wsHooks_->authenticate(request.authorization)
+                                : std::optional<Device>();
+        if (!device.has_value()) {
+            respond({kStatusUnauthorized, R"({"error":"unauthorized"})"},
+                    httpVersion);
+            return true;
+        }
+        auto session = std::make_shared<WsSession>(
+            WsSession::Stream(std::move(stream_)), parser_->get(), *device,
+            wsHooks_->limits, wsHooks_->nowMs, *wsHooks_->hub,
+            *wsHooks_->callSink, *wsHooks_->msgSink);
+        session->run();
+        return true;
+    }
+
+    void respond(const HttpResponse &response, unsigned httpVersion) {
         auto message = std::make_shared<http::response<http::string_body>>(
-            static_cast<http::status>(response.status), received.version());
+            static_cast<http::status>(response.status), httpVersion);
         message->body() = response.body;
         message->keep_alive(false);
         message->prepare_payload();
         auto self = shared_from_this();
-        http::async_write(
-            stream_, *message,
-            [self, message](beast::error_code writeError,
-                            std::size_t /*bytesTransferred*/) -> void {
-                if (writeError) {
-                    return;
-                }
-                // Graceful TLS shutdown ends the one-request
-                // connection. The shutdown continuation owns the
-                // session: releasing it here is what destroys
-                // stream_ - without the capture the session would
-                // die while the shutdown op is still pending.
-                self->stream_.async_shutdown(
-                    [self](const beast::error_code &) -> void {});
-            });
+        http::async_write(stream_, *message,
+                          [self, message](beast::error_code writeError,
+                                          std::size_t /*bytes*/) -> void {
+                              if (writeError) {
+                                  return;
+                              }
+                              // Graceful TLS shutdown ends the one-request
+                              // connection. The shutdown continuation owns the
+                              // session: releasing it here is what destroys
+                              // stream_ - without the capture the session would
+                              // die while the shutdown op is still pending.
+                              self->stream_.async_shutdown(
+                                  [self](const beast::error_code &) -> void {});
+                          });
     }
 
     beast::ssl_stream<beast::tcp_stream> stream_;
@@ -114,11 +157,13 @@ class Listener::Session : public std::enable_shared_from_this<Session> {
     beast::flat_buffer buffer_;
     std::shared_ptr<http::request_parser<http::string_body>> parser_;
     Router &router_;
+    const WsHooks *wsHooks_;
 };
 
 Listener::Listener(asio::io_context &ioContext, ssl::context &sslContext,
-                   Router &router)
-    : ioContext_(ioContext), sslContext_(sslContext), router_(router) {}
+                   Router &router, const WsHooks *wsHooks)
+    : ioContext_(ioContext), wsHooks_(wsHooks), sslContext_(sslContext),
+      router_(router) {}
 
 void Listener::listen(const std::string &bindAddress, unsigned short port) {
     acceptor_ = std::make_unique<tcp::acceptor>(ioContext_);
@@ -141,8 +186,8 @@ void Listener::doAccept() {
         asio::make_strand(ioContext_),
         [this](beast::error_code errorCode, tcp::socket socket) -> void {
             if (!errorCode) {
-                auto session = std::make_shared<Session>(std::move(socket),
-                                                         sslContext_, router_);
+                auto session = std::make_shared<Session>(
+                    std::move(socket), sslContext_, router_, wsHooks_);
                 session->start();
             }
             doAccept();

@@ -13,8 +13,11 @@
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 
+#include "server/config.hpp"
+#include "server/hub.hpp"
 #include "server/store.hpp"
 #include "server/throttle.hpp"
+#include "server/ws_session.hpp"
 
 namespace server {
 
@@ -55,6 +58,19 @@ class Router {
     std::vector<std::string> knownPaths_;
 };
 
+// Bearer <device token> -> the live device behind it, nullopt otherwise;
+// shared by every authenticated endpoint (defined in users_handler.cpp).
+[[nodiscard]] auto authenticateBearer(Store &store, const HttpRequest &request)
+    -> std::optional<Device>;
+
+// GET /api/v1/users?prefix= (Bearer): username prefix search, max 20.
+[[nodiscard]] auto handleUsers(Store &store, const HttpRequest &request)
+    -> HttpResponse;
+
+// GET /api/v1/turn (Bearer): short-lived TURN REST credentials (spec 4.6).
+[[nodiscard]] auto handleTurn(const Config &config, Store &store,
+                              const HttpRequest &request) -> HttpResponse;
+
 // POST /api/v1/register: consumes the invite code for `username`, creates
 // the user/device, returns the device token (shown exactly once). 400 on
 // malformed JSON or a bad username, 403 on an unusable invite, 429 when the
@@ -67,10 +83,24 @@ class Router {
 // goes through logRequest. Connections are closed after one response
 // (HTTP/1.1 keep-alive arrives with the WebSocket task, where sessions are
 // long-lived anyway).
+// Wiring for the GET /ws upgrade path: token authentication and the sinks
+// the accepted WebSocket session feeds. Null when the deployment runs
+// without WebSocket support (tests of the HTTP-only surface).
+struct WsHooks {
+    std::function<std::optional<Device>(const std::string &authorization)>
+        authenticate;
+    Hub *hub = nullptr;
+    ProtocolSink *callSink = nullptr;
+    ProtocolSink *msgSink = nullptr;
+    Limits limits;
+    std::function<std::int64_t()> nowMs;
+};
+
 class Listener {
   public:
     Listener(boost::asio::io_context &ioContext,
-             boost::asio::ssl::context &sslContext, Router &router);
+             boost::asio::ssl::context &sslContext, Router &router,
+             const WsHooks *wsHooks = nullptr);
 
     // Binds to `bindAddress:port` (port 0 = ephemeral) and starts the
     // accept loop. Throws std::runtime_error on bind failures.
@@ -86,6 +116,7 @@ class Listener {
     class Session;
 
     boost::asio::io_context &ioContext_;
+    const WsHooks *wsHooks_;
     std::unique_ptr<boost::asio::ip::tcp::acceptor> acceptor_;
     boost::asio::ssl::context &sslContext_;
     Router &router_;

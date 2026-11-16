@@ -44,8 +44,11 @@ find_package(SQLite3 REQUIRED)
 # only wires the CLI entry point.
 add_library(server_lib STATIC src/cli.cpp src/config.cpp src/log.cpp
                            src/store.cpp src/crypto.cpp src/throttle.cpp
+                           src/wire.cpp src/ws/hub.cpp src/ws/session.cpp
                            src/http/router.cpp src/http/listener.cpp
-                           src/http/register_handler.cpp)
+                           src/http/register_handler.cpp
+                           src/http/users_handler.cpp
+                           src/http/turn_handler.cpp)
 target_include_directories(server_lib
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_link_libraries(server_lib
