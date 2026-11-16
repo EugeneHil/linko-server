@@ -9,6 +9,15 @@ include(GoogleTest)
 # server_lib and gtest_main, and registers every TEST it contains with CTest.
 function(linko_add_test name)
   add_executable(${name} ${ARGN})
+  # Windows OpenSSL uplink: test executables load certificates through
+  # OpenSSL FILE* paths, so each must export OPENSSL_Applink exactly like
+  # the server executable (see the root CMakeLists.txt and
+  # vendor/applink/README.md).
+  if(MSVC)
+    set(LINKO_APPLINK_C ${CMAKE_SOURCE_DIR}/vendor/applink/applink.c)
+    target_sources(${name} PRIVATE ${LINKO_APPLINK_C})
+    set_source_files_properties(${LINKO_APPLINK_C} PROPERTIES COMPILE_OPTIONS "/W0")
+  endif()
   target_link_libraries(${name} PRIVATE server_lib gtest_main)
   gtest_discover_tests(${name})
 endfunction()

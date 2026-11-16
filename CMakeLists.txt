@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.28)
 project(linko-server
   VERSION 0.1.0
   DESCRIPTION "Linko server: signaling and messaging for the Linko messenger"
-  LANGUAGES CXX)
+  LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -67,6 +67,19 @@ target_link_libraries(server_lib
 
 add_executable(linko-server src/main.cpp)
 target_link_libraries(linko-server PRIVATE server_lib)
+
+# vcpkg's Windows OpenSSL is built with uplink support: a process calling
+# OpenSSL FILE* paths (SSL_CTX_use_certificate_chain_file, ...) must export
+# the OPENSSL_Applink table itself or OpenSSL aborts it ("no OPENSSL_Applink",
+# first seen as the mass Windows CI test failure in LNK-25). applink.c is
+# vendored from OpenSSL ms/applink.c for exactly this purpose; on non-MSVC
+# platforms nothing needs it. /W0: upstream code is not held to the lint
+# rules, same policy as vendor_qrcodegen above. See vendor/applink/README.md.
+if(MSVC)
+  set(LINKO_APPLINK_C ${CMAKE_CURRENT_SOURCE_DIR}/vendor/applink/applink.c)
+  target_sources(linko-server PRIVATE ${LINKO_APPLINK_C})
+  set_source_files_properties(${LINKO_APPLINK_C} PROPERTIES COMPILE_OPTIONS "/W0")
+endif()
 
 enable_testing()
 add_subdirectory(tests)
