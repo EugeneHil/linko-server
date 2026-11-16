@@ -146,7 +146,7 @@ class CapturedStdout {
         path_ =
             std::string(::testing::TempDir()) + "reports-out-" + name + ".txt";
         original_ = stdout;
-        stdout = std::fopen(path_.c_str(), "w");
+        stdout = test_util::openFile(path_, "w");
     }
     ~CapturedStdout() {
         std::fflush(stdout);

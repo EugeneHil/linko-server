@@ -36,7 +36,7 @@ class CapturedStdout {
         std::fflush(stdout);
         path_ = std::string(::testing::TempDir()) + "cli-out-" + name + ".txt";
         original_ = stdout;
-        stdout = std::fopen(path_.c_str(), "w");
+        stdout = test_util::openFile(path_, "w");
     }
     ~CapturedStdout() {
         std::fflush(stdout);

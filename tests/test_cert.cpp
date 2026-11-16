@@ -23,6 +23,7 @@
 
 #include "server/cli.hpp"
 #include "server/crypto.hpp"
+#include "util/test_cert.hpp"
 
 namespace fs = std::filesystem;
 
@@ -44,7 +45,7 @@ class CapturedStdout {
         std::fflush(stdout);
         path_ = std::string(::testing::TempDir()) + "cert-out-" + name + ".txt";
         original_ = stdout;
-        stdout = std::fopen(path_.c_str(), "w");
+        stdout = test_util::openFile(path_, "w");
     }
     ~CapturedStdout() {
         std::fflush(stdout);
