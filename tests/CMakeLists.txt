@@ -27,6 +27,7 @@ linko_add_test(server_call_registry test_call_registry.cpp)
 linko_add_test(server_turn_users test_turn_users.cpp)
 linko_add_test(server_messaging test_messaging.cpp)
 linko_add_test(server_files test_files.cpp)
+linko_add_test(server_reports test_reports.cpp)
 # The crypto and CLI suites include the header-only test_cert helper.
 target_include_directories(server_crypto PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(server_cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -36,5 +37,6 @@ target_include_directories(server_call_registry PRIVATE ${CMAKE_CURRENT_SOURCE_D
 target_include_directories(server_turn_users PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(server_messaging PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(server_files PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(server_reports PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # The config suite loads the committed example file by absolute path.
 target_compile_definitions(server_config PRIVATE LINKO_REPO_ROOT="${CMAKE_SOURCE_DIR}")

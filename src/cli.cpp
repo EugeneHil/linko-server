@@ -15,6 +15,8 @@
 
 #include <qrcodegen.hpp>
 
+#include <nlohmann/json.hpp>
+
 #include "server/call_registry.hpp"
 #include "server/config.hpp"
 #include "server/crypto.hpp"
@@ -43,6 +45,14 @@ constexpr std::int64_t kSecondsPerHour = 3600;
 // The TTL cleanup cadence (Plan 3 Task 8): once at startup, then daily.
 constexpr int kCleanupIntervalHours = 24;
 
+// Epoch milliseconds from the system clock - the inline lambdas below bind
+// it where an injectable clock slot exists.
+auto systemNowMs() -> std::int64_t {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
 // UTF-8 half-block characters for the terminal QR code (upper half filled,
 // lower half filled, full block).
 constexpr const char *kBlockUpper = "\xE2\x96\x80";
@@ -61,7 +71,11 @@ auto usage() -> int {
                "                Print a one-time join link and its QR code.\n"
                "  user list\n"
                "  device list <user>\n"
-               "  device revoke <user> <id>\n",
+               "  device revoke <user> <id>\n"
+               "  calls list\n"
+               "                Print stored end-of-call quality reports.\n"
+               "  calls show <callId>\n"
+               "                Print the stored reports of one call.\n",
                stderr);
     return kExitUsage;
 }
@@ -234,6 +248,13 @@ auto handleRun(const std::string &configPath) -> int {
         [&store, &files](const HttpRequest &request) -> HttpResponse {
             return handleFileDownload(*store, *files, request);
         });
+    // Call quality reports (Plan 3 Task 9): the stored body is the client's
+    // summary verbatim; received_at comes from the system clock.
+    router.addPrefix("POST", "/api/v1/calls/",
+                     [&store](const HttpRequest &request) -> HttpResponse {
+                         return handleCallReport(*store, request,
+                                                 systemNowMs());
+                     });
 
     Listener listener(ioContext, sslContext, router, &wsHooks, &uploadHooks);
     listener.listen(config.bind, static_cast<unsigned short>(config.port));
@@ -337,6 +358,79 @@ auto handleDeviceRevoke(const std::vector<std::string> &arguments,
     return kExitOk;
 }
 
+// The display value of one report field (Plan 3 Task 9): strings and
+// numbers print as-is, anything else (missing, null, nested) prints as
+// "-"; report bodies are app-defined, so every lookup is tolerant.
+auto reportField(const nlohmann::json &report, const char *key) -> std::string {
+    if (!report.is_object() || !report.contains(key)) {
+        return "-";
+    }
+    const auto &value = report.at(key);
+    if (value.is_string()) {
+        return value.get<std::string>();
+    }
+    if (value.is_number()) {
+        return value.dump();
+    }
+    return "-";
+}
+
+// One row per stored report: the server-side facts (call id, sender,
+// received_at) plus the fields the list cares about, derived from the
+// stored JSON with tolerant lookups.
+auto handleCallList(const Config &config) -> int {
+    const auto store = openStore(config);
+    for (const auto &row : store->callReports()) {
+        const auto report =
+            nlohmann::json::parse(row.reportJson, nullptr, false);
+        std::fputs((row.callId + " " + row.fromUser + " " +
+                    std::to_string(row.receivedAt) +
+                    " duration=" + reportField(report, "duration") +
+                    " setupMs=" + reportField(report, "setupMs") +
+                    " candidate=" + reportField(report, "candidate") +
+                    " endReason=" + reportField(report, "endReason") + "\n")
+                       .c_str(),
+                   stdout);
+    }
+    return kExitOk;
+}
+
+// Prints every stored report of `callId` verbatim, one per line; an
+// unknown call id prints nothing and succeeds (like an empty user list).
+auto handleCallShow(const Config &config, const std::string &callId) -> int {
+    const auto store = openStore(config);
+    for (const auto &row : store->callReports()) {
+        if (row.callId == callId) {
+            std::fputs((row.reportJson + "\n").c_str(), stdout);
+        }
+    }
+    return kExitOk;
+}
+
+// The calls subcommands (Plan 3 Task 9). nullopt when `command` is not a
+// calls command at all - the caller falls through to usage().
+auto handleCallsCommand(const std::string &command,
+                        const std::vector<std::string> &arguments,
+                        const std::string &configPath) -> std::optional<int> {
+    if (command != "calls" || arguments.empty() ||
+        (arguments.front() != "list" && arguments.front() != "show")) {
+        return std::nullopt;
+    }
+    if (arguments.front() == "show" && arguments.size() < 2) {
+        return usage();
+    }
+    try {
+        const auto config = loadConfig(configPath);
+        if (arguments.front() == "list") {
+            return handleCallList(config);
+        }
+        return handleCallShow(config, arguments[1]);
+    } catch (const std::exception &error) {
+        std::fprintf(stderr, "error: %s\n", error.what());
+        return kExitError;
+    }
+}
+
 } // namespace
 
 auto runCli(int argc, char **argv) -> int {
@@ -407,6 +501,10 @@ auto runCli(int argc, char **argv) -> int {
             std::fprintf(stderr, "error: %s\n", error.what());
             return kExitError;
         }
+    }
+    if (const auto handled =
+            handleCallsCommand(command, arguments, configPath)) {
+        return *handled;
     }
     return usage();
 }
