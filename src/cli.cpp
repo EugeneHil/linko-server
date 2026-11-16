@@ -14,6 +14,7 @@
 
 #include <qrcodegen.hpp>
 
+#include "server/call_registry.hpp"
 #include "server/config.hpp"
 #include "server/crypto.hpp"
 #include "server/http.hpp"
@@ -132,7 +133,17 @@ auto handleRun(const std::string &configPath) -> int {
                    std::chrono::system_clock::now().time_since_epoch())
             .count();
     });
-    auto callSink = std::make_unique<NullSink>();
+    // The call registry (Plan 3 Task 6): one core state machine per call,
+    // busy answers, ring timeouts, relay and socket-drop cleanup. The
+    // messaging sink stays null until Task 7 lands.
+    auto registry = std::make_unique<CallRegistry>(
+        *hub, config.limits,
+        []() -> std::int64_t {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::system_clock::now().time_since_epoch())
+                .count();
+        },
+        ioContext.get_executor());
     auto msgSink = std::make_unique<NullSink>();
     WsHooks wsHooks;
     wsHooks.authenticate =
@@ -142,7 +153,7 @@ auto handleRun(const std::string &configPath) -> int {
         return authenticateBearer(*store, request);
     };
     wsHooks.hub = hub.get();
-    wsHooks.callSink = callSink.get();
+    wsHooks.callSink = registry.get();
     wsHooks.msgSink = msgSink.get();
     wsHooks.limits = config.limits;
     wsHooks.nowMs = []() -> std::int64_t {
