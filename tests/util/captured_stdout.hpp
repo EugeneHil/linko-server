@@ -1,18 +1,25 @@
 // stdout capture for CLI tests (Plan 3): redirects the descriptor under
 // stdout for the lifetime of the object and restores it afterwards. The
-// redirection goes through dup/dup2 (POSIX) or _dup/_dup2 (MSVC) instead of
-// reassigning stdout itself - MSVC's stdout macro is not an l-value, so a
-// plain "stdout = fopen(...)" does not compile there.
+// redirection swaps fd 1 itself (open the capture file, dup2 it onto
+// stdout's descriptor, close the temporary one) instead of reopening the
+// stream: MSVC's stdout is not an l-value, so a plain "stdout = fopen(...)"
+// does not compile, and freopen_s - which replaces the stdout FILE object -
+// silently lost every write the CLI made through it on the MSVC runners
+// (CLI exit 0, empty capture file, nothing on the console; LNK-25 CI). With
+// fd-level redirection the stdout FILE object and its buffer stay intact;
+// only the descriptor they write to changes.
 #pragma once
 
 #include <gtest/gtest.h>
 
 #include <cstdio>
+#include <fcntl.h>
 #include <fstream>
 #include <string>
 
 #if defined(_WIN32)
 #include <io.h>
+#include <sys/stat.h>
 #else
 #include <unistd.h>
 #endif
@@ -22,7 +29,7 @@ namespace test_util {
 class CapturedStdout {
   public:
     explicit CapturedStdout(const std::string &name) {
-        std::fflush(stdout);
+        std::fflush(nullptr);
         path_ = std::string(::testing::TempDir()) + "capture-" + name + ".txt";
         saved_ = duplicate(fileNo(stdout));
         if (saved_ == kInvalidFileNo || !redirectStdoutTo(path_)) {
@@ -35,7 +42,7 @@ class CapturedStdout {
         }
     }
     ~CapturedStdout() {
-        std::fflush(stdout);
+        std::fflush(nullptr);
         if (saved_ != kInvalidFileNo) {
             moveDuplicate(saved_, fileNo(stdout));
             closeFileNo(saved_);
@@ -47,7 +54,7 @@ class CapturedStdout {
     [[nodiscard]] auto content() const -> std::string {
         // stdout is fully buffered while redirected to a file: flush so
         // reads inside the capture scope see what the code has printed.
-        std::fflush(stdout);
+        std::fflush(nullptr);
         std::ifstream input(path_, std::ios::binary);
         return {std::istreambuf_iterator<char>(input),
                 std::istreambuf_iterator<char>()};
@@ -56,17 +63,36 @@ class CapturedStdout {
   private:
     using FileNo = int;
     static constexpr FileNo kInvalidFileNo = -1;
+    // 0644: the capture file holds nothing sensitive, but stays private.
+    static constexpr int kCaptureFilePermissions = 0644;
 
-    // MSVC deprecates freopen with C4996; freopen_s is the sanctioned
-    // spelling there - and the only possible one, since stdout is not an
-    // l-value: the FILE** out-parameter receives the reopened stream while
-    // the stdout stream itself is redirected in place.
     static auto redirectStdoutTo(const std::string &path) -> bool {
 #if defined(_WIN32)
-        FILE *redirected = nullptr;
-        return freopen_s(&redirected, path.c_str(), "w", stdout) == 0;
+        const int fileFd =
+            ::_open(path.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_TEXT,
+                    _S_IREAD | _S_IWRITE);
+        const FileNo stdoutFd = 1;
 #else
-        return std::freopen(path.c_str(), "w", stdout) != nullptr;
+        const int fileFd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC,
+                                  kCaptureFilePermissions);
+        const FileNo stdoutFd = STDOUT_FILENO;
+#endif
+        if (fileFd == kInvalidFileNo) {
+            return false;
+        }
+        if (moveDuplicateChecked(fileFd, stdoutFd) != 0) {
+            closeFileNo(fileFd);
+            return false;
+        }
+        closeFileNo(fileFd);
+        return true;
+    }
+
+    static auto moveDuplicateChecked(FileNo from, FileNo to) -> int {
+#if defined(_WIN32)
+        return ::_dup2(from, to);
+#else
+        return ::dup2(from, to);
 #endif
     }
 
