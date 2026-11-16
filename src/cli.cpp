@@ -127,13 +127,45 @@ auto handleRun(const std::string &configPath) -> int {
                    std::chrono::system_clock::now().time_since_epoch())
             .count();
     });
+    auto hub = std::make_unique<Hub>([]() -> std::int64_t {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    });
+    auto callSink = std::make_unique<NullSink>();
+    auto msgSink = std::make_unique<NullSink>();
+    WsHooks wsHooks;
+    wsHooks.authenticate =
+        [&store](const std::string &authorization) -> std::optional<Device> {
+        HttpRequest request;
+        request.authorization = authorization;
+        return authenticateBearer(*store, request);
+    };
+    wsHooks.hub = hub.get();
+    wsHooks.callSink = callSink.get();
+    wsHooks.msgSink = msgSink.get();
+    wsHooks.limits = config.limits;
+    wsHooks.nowMs = []() -> std::int64_t {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    };
+
     Router router;
     router.add("POST", "/api/v1/register",
                [&store, &throttle](const HttpRequest &request) -> HttpResponse {
                    return handleRegister(*store, throttle, request);
                });
+    router.add("GET", "/api/v1/users",
+               [&store](const HttpRequest &request) -> HttpResponse {
+                   return handleUsers(*store, request);
+               });
+    router.add("GET", "/api/v1/turn",
+               [&config, &store](const HttpRequest &request) -> HttpResponse {
+                   return handleTurn(config, *store, request);
+               });
 
-    Listener listener(ioContext, sslContext, router);
+    Listener listener(ioContext, sslContext, router, &wsHooks);
     listener.listen(config.bind, static_cast<unsigned short>(config.port));
     logEvent("listening", config.bind + ":" + std::to_string(config.port));
     ioContext.run();
