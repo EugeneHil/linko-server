@@ -66,7 +66,9 @@ class CallRegistry final : public ProtocolSink {
   public:
     using Clock = std::function<std::int64_t()>; // epoch milliseconds
 
-    // `limits` is reserved for the file.offer size cap (Plan 3 Task 8).
+    // `limits` carries the file.offer size cap (Plan 3 Task 8): an offer
+    // above Limits::maxFileBytes never relays - the sender gets
+    // session.error{code:"file_too_large"}.
     CallRegistry(Hub &hub, const Limits &limits, Clock nowMs,
                  asio::any_io_executor timers);
     ~CallRegistry() override = default;
@@ -98,6 +100,11 @@ class CallRegistry final : public ProtocolSink {
     void handleLifecycle(const std::string &fromUser,
                          const linko::Envelope &envelope,
                          const std::string &wire);
+    // The file.offer size cap: true when the offer exceeded the limit and
+    // the sender was answered with session.error{file_too_large} (nothing
+    // is relayed); false when the offer may pass through.
+    [[nodiscard]] auto handleOfferCap(const std::string &fromUser,
+                                      const linko::Envelope &envelope) -> bool;
     void handlePassThrough(const std::string &fromUser,
                            const linko::Envelope &envelope,
                            const std::string &wire);
@@ -112,6 +119,7 @@ class CallRegistry final : public ProtocolSink {
         -> std::string;
 
     Hub &hub_;
+    Limits limits_;
     Clock nowMs_;
     asio::any_io_executor executor_;
     // Sessions run on per-connection strands and the timers run on the shared

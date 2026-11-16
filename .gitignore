@@ -39,3 +39,6 @@ data/
 *.profraw
 coverage/
 # --- end linko shared ignores ---
+
+# CTest artifacts
+Testing/

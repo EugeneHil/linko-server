@@ -33,6 +33,11 @@ void Router::add(const std::string &method, const std::string &path,
     knownPaths_.push_back(path);
 }
 
+void Router::addPrefix(const std::string &method, const std::string &prefix,
+                       HttpHandler handler) {
+    prefixRoutes_.push_back({method, prefix, std::move(handler)});
+}
+
 auto Router::dispatch(const HttpRequest &request) const -> HttpResponse {
     const auto key = routeKey(request.method, request.target);
     for (const auto &[knownKey, handler] : routes_) {
@@ -41,8 +46,24 @@ auto Router::dispatch(const HttpRequest &request) const -> HttpResponse {
         }
     }
     const auto path = pathOf(request.target);
+    // Prefix routes come after the exact ones (Plan 3 Task 8: GET
+    // /api/v1/files/{id}).
+    for (const auto &route : prefixRoutes_) {
+        if (request.method == route.method &&
+            path.rfind(route.prefix, 0) == 0) {
+            return route.handler(request);
+        }
+    }
     for (const auto &knownPath : knownPaths_) {
         if (knownPath == path) {
+            return {
+                kStatusMethodNotAllowed,
+                R"({"error":"method_not_allowed"})",
+            };
+        }
+    }
+    for (const auto &route : prefixRoutes_) {
+        if (path.rfind(route.prefix, 0) == 0) {
             return {
                 kStatusMethodNotAllowed,
                 R"({"error":"method_not_allowed"})",

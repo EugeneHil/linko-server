@@ -49,7 +49,9 @@ add_library(server_lib STATIC src/cli.cpp src/config.cpp src/log.cpp
                            src/http/router.cpp src/http/listener.cpp
                            src/http/register_handler.cpp
                            src/http/users_handler.cpp
-                           src/http/turn_handler.cpp)
+                           src/http/turn_handler.cpp
+                           src/http/files_handler.cpp
+                           src/file_store.cpp src/cleanup.cpp)
 target_include_directories(server_lib
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_link_libraries(server_lib
