@@ -138,10 +138,9 @@ auto httpsPost(const std::string &host, unsigned short port,
     return {static_cast<int>(response.result_int()), response.body()};
 }
 
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) - (name, body) is the
-// same shape every config-writing helper in these suites uses.
-auto writeTempConfig(const std::string &name, const std::string &dataDir)
-    -> std::string {
+auto writeTempConfig(
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (name, dataDir)
+    const std::string &name, const std::string &dataDir) -> std::string {
     const auto path = std::filesystem::path(::testing::TempDir()) /
                       ("linko-reports-" + name + ".json");
     std::ofstream output(path);

@@ -29,10 +29,12 @@ constexpr std::int64_t kPastTtlMs = 60 * kMsPerSecond;
 // UTF-8 upper-half block character, the QR output marker.
 constexpr const char *kQrBlock = "\xE2\x96\x80";
 
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) - (name, body) is the
-// same shape every config-writing helper in this suite uses.
-auto writeTempConfig(const std::string &name, const std::string &dataDir)
-    -> std::string {
+// (name, dataDir) is the same shape every config-writing helper in this
+// suite uses.
+auto writeTempConfig(
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) - see above; the
+    // note cannot follow the NOLINTNEXTLINE line (it would eat its scope).
+    const std::string &name, const std::string &dataDir) -> std::string {
     const auto path = std::filesystem::path(::testing::TempDir()) /
                       ("linko-cli-" + name + ".json");
     std::ofstream output(path);
@@ -130,9 +132,18 @@ TEST(Cli, InviteCreatePrintsLinkAndQr) {
     std::string output;
     {
         test_util::CapturedStdout capture("invite-link");
-        exitCode = runCli({"--config", fixture.configPath, "invite", "create",
-                           "--host", "qrtest.example", "--port", "443",
-                           "--cert", fixture.certPath});
+        exitCode = runCli({
+            "--config",
+            fixture.configPath,
+            "invite",
+            "create",
+            "--host",
+            "qrtest.example",
+            "--port",
+            "443",
+            "--cert",
+            fixture.certPath,
+        });
         output = capture.content();
     }
     EXPECT_EQ(exitCode, 0);
@@ -150,9 +161,18 @@ TEST(Cli, InviteCreateStoresHashOnly) {
     std::string output;
     {
         test_util::CapturedStdout capture("invite-hash");
-        exitCode = runCli({"--config", fixture.configPath, "invite", "create",
-                           "--host", "h", "--port", "443", "--cert",
-                           fixture.certPath});
+        exitCode = runCli({
+            "--config",
+            fixture.configPath,
+            "invite",
+            "create",
+            "--host",
+            "h",
+            "--port",
+            "443",
+            "--cert",
+            fixture.certPath,
+        });
         output = capture.content();
     }
     EXPECT_EQ(exitCode, 0);
@@ -172,8 +192,14 @@ TEST(Cli, InviteTtlFlagExpires) {
     std::string output;
     {
         test_util::CapturedStdout capture("invite-ttl");
-        exitCode = runCli({"--config", fixture.configPath, "invite", "create",
-                           "--ttl-hours", "2"});
+        exitCode = runCli({
+            "--config",
+            fixture.configPath,
+            "invite",
+            "create",
+            "--ttl-hours",
+            "2",
+        });
         output = capture.content();
     }
     EXPECT_EQ(exitCode, 0);
@@ -252,8 +278,14 @@ TEST(Cli, DeviceRevokeMarksRevoked) {
     std::string output;
     {
         test_util::CapturedStdout capture("device-revoke");
-        exitCode = runCli({"--config", fixture.configPath, "device", "revoke",
-                           "eugene", std::to_string(activeId)});
+        exitCode = runCli({
+            "--config",
+            fixture.configPath,
+            "device",
+            "revoke",
+            "eugene",
+            std::to_string(activeId),
+        });
         output = capture.content();
     }
     EXPECT_EQ(exitCode, 0);
@@ -269,8 +301,14 @@ TEST(Cli, DeviceRevokeBadIdExits2) {
     int exitCode = -1;
     {
         test_util::CapturedStdout capture("device-bad");
-        exitCode = runCli({"--config", fixture.configPath, "device", "revoke",
-                           "eugene", "notanumber"});
+        exitCode = runCli({
+            "--config",
+            fixture.configPath,
+            "device",
+            "revoke",
+            "eugene",
+            "notanumber",
+        });
     }
     EXPECT_EQ(exitCode, 2);
 }

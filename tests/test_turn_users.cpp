@@ -33,6 +33,7 @@ using asio::ip::tcp;
 namespace {
 
 constexpr std::int64_t kBaseMs = 1790000000000;
+constexpr int kTestPort = 443;
 constexpr int kTurnTtlSec = 3600;
 constexpr int kHttpVersion11 = 11;
 constexpr int kHmacDigestBufferBytes = 64;
@@ -144,8 +145,10 @@ class TurnUsersFixture {
     }
 
   private:
-    static auto writeConfig(const std::string &name,
-                            const std::string &fileTurnSecret) -> std::string {
+    static auto writeConfig(
+        // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+        const std::string &name, const std::string &fileTurnSecret)
+        -> std::string {
         const auto path = std::filesystem::path(::testing::TempDir()) /
                           ("linko-tu-" + name + ".json");
         std::ofstream output(path);
@@ -154,7 +157,8 @@ class TurnUsersFixture {
         // backslashes ("C:\Users\..." is an invalid JSON escape).
         nlohmann::json config = {
             {"dataDir", std::string(::testing::TempDir()) + "linko-tu-data"},
-            {"port", 443}};
+            {"port", kTestPort},
+        };
         if (!fileTurnSecret.empty()) {
             config["turnSecret"] = fileTurnSecret;
         }
