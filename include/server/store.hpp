@@ -10,11 +10,21 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
+
+#include "linko/messages.hpp"
 
 struct sqlite3;
 
 namespace server {
+
+// The canonical conversation key of the 1:1 pair: lexicographic
+// min + '\x1f' + max, so both directions address the same row set. The
+// message tables key rows by it; the messaging sink and clients treat the
+// key as opaque.
+[[nodiscard]] auto conversationKey(const std::string &first,
+                                   const std::string &second) -> std::string;
 
 struct Invite {
     std::string code;
@@ -98,6 +108,50 @@ class Store {
     [[nodiscard]] auto listUsers() const -> std::vector<std::string>;
     [[nodiscard]] auto listDevices(const std::string &user) const
         -> std::vector<Device>;
+
+    // True when the user row exists (Messaging gates msg.send on it).
+    [[nodiscard]] auto userExists(const std::string &user) const -> bool;
+
+    // Stores a chat message (migration v2 tables). seq and ts are assigned
+    // here - seq = MAX(seq)+1 per conversation, ts = the store's clock -
+    // inside one BEGIN IMMEDIATE transaction, so concurrent sends on shared
+    // conversations stay monotonic; the caller's seq/ts are ignored. A
+    // duplicate message id stores nothing and returns nullopt (idempotent
+    // sends, design spec 4.5 - the caller fetches the original with
+    // messageById and replays it); nullopt also signals an internal SQL
+    // failure.
+    [[nodiscard]] auto storeMessage(linko::MessageRecord record)
+        -> std::optional<linko::MessageRecord>;
+
+    // The stored message with this id; nullopt when unknown.
+    [[nodiscard]] auto messageById(const std::string &msgId) const
+        -> std::optional<linko::MessageRecord>;
+
+    // All messages of the conversation with seq > afterSeq, in seq order
+    // (both directions - the conversation key covers the pair).
+    [[nodiscard]] auto messagesAfter(const std::string &conversation,
+                                     std::int64_t afterSeq) const
+        -> std::vector<linko::MessageRecord>;
+
+    // Conversation keys (see server::conversationKey) with a message sent
+    // by or to `user`; no order guaranteed.
+    [[nodiscard]] auto conversationsOf(const std::string &user) const
+        -> std::vector<std::string>;
+
+    // Moves `holder`'s receipt watermarks (delivered/read) for the
+    // conversation forward; lower values than the current ones are ignored,
+    // so receipts never regress. Creates the row on first touch.
+    void advanceReceipts(const std::string &conversation,
+                         const std::string &holder,
+                         const std::string &counterpart,
+                         std::int64_t deliveredUpto, std::int64_t readUpto);
+
+    // The holder's (deliveredUpto, readUpto) pair for the conversation;
+    // zeros when nothing was acked yet.
+    [[nodiscard]] auto receiptsOf(const std::string &conversation,
+                                  const std::string &holder,
+                                  const std::string &counterpart) const
+        -> std::pair<std::int64_t, std::int64_t>;
 
   private:
     // Runs a statement with no result rows; false on SQL failure.

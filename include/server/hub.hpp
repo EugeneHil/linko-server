@@ -19,8 +19,13 @@ class WsSession;
 class Hub {
   public:
     using Clock = std::function<std::int64_t()>; // epoch milliseconds
+    // Invoked after every successful attach (fresh socket or replacement),
+    // outside the hub lock; the host wires it to Messaging::onConnect.
+    using ConnectHook = std::function<void(const std::string &user)>;
 
     explicit Hub(Clock nowMs);
+
+    void setConnectHook(ConnectHook hook);
 
     // Registers `session` as the live socket of `device.user`, closing a
     // previous socket of the same user with close code 4001 (one device
@@ -45,6 +50,7 @@ class Hub {
 
   private:
     Clock nowMs_;
+    ConnectHook connectHook_;
     mutable std::mutex mutex_;
     std::unordered_map<std::string, WsSession *> byUser_;
     std::unordered_map<std::int64_t, std::string> userByDeviceId_;
