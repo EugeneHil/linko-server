@@ -16,7 +16,16 @@
 
 #include "server/config.hpp"
 #include "server/crypto.hpp"
+#include "server/http.hpp"
+#include "server/log.hpp"
 #include "server/store.hpp"
+#include "server/throttle.hpp"
+
+#include <boost/asio.hpp>
+#include <boost/asio/ssl.hpp>
+
+namespace asio = boost::asio;
+namespace ssl = asio::ssl;
 
 namespace server {
 namespace {
@@ -100,6 +109,35 @@ auto optionValue(const std::vector<std::string> &arguments,
         }
     }
     return std::nullopt;
+}
+
+// Starts the server: TLS listener on config.bind:config.port with the
+// registration route wired. Runs the io_context on the calling thread until
+// the process is stopped.
+auto handleRun(const std::string &configPath) -> int {
+    const auto config = loadConfig(configPath);
+    asio::io_context ioContext;
+    ssl::context sslContext{ssl::context::tls_server};
+    sslContext.use_certificate_chain_file(config.certFile);
+    sslContext.use_private_key_file(config.keyFile, ssl::context::pem);
+
+    auto store = openStore(config);
+    Throttle throttle(config.limits.authFailsPerMinute, []() -> std::int64_t {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    });
+    Router router;
+    router.add("POST", "/api/v1/register",
+               [&store, &throttle](const HttpRequest &request) -> HttpResponse {
+                   return handleRegister(*store, throttle, request);
+               });
+
+    Listener listener(ioContext, sslContext, router);
+    listener.listen(config.bind, static_cast<unsigned short>(config.port));
+    logEvent("listening", config.bind + ":" + std::to_string(config.port));
+    ioContext.run();
+    return kExitOk;
 }
 
 auto handleInviteCreate(const std::vector<std::string> &arguments,
@@ -214,6 +252,15 @@ auto runCli(int argc, char **argv) -> int {
     }
     const std::string command = argv[index];
     const std::vector<std::string> arguments(argv + index + 1, argv + argc);
+
+    if (command == "run" && arguments.empty()) {
+        try {
+            return handleRun(configPath);
+        } catch (const std::exception &error) {
+            std::fprintf(stderr, "error: %s\n", error.what());
+            return kExitError;
+        }
+    }
 
     // Validate the command shape before touching the config file: usage
     // errors must not depend on a config file existing.
