@@ -18,6 +18,7 @@
 #include "server/cli.hpp"
 #include "server/http.hpp"
 #include "server/store.hpp"
+#include "util/captured_stdout.hpp"
 #include "util/test_cert.hpp"
 
 namespace beast = boost::beast;
@@ -135,40 +136,6 @@ auto httpsPost(const std::string &host, unsigned short port,
     http::read(stream, buffer, response);
     return {static_cast<int>(response.result_int()), response.body()};
 }
-
-// Redirects FILE* stdout into a temp file for the lifetime of this object
-// and restores it afterwards. runCli prints through stdout, so its output
-// is fully captured.
-class CapturedStdout {
-  public:
-    explicit CapturedStdout(const std::string &name) {
-        std::fflush(stdout);
-        path_ =
-            std::string(::testing::TempDir()) + "reports-out-" + name + ".txt";
-        original_ = stdout;
-        stdout = test_util::openFile(path_, "w");
-    }
-    ~CapturedStdout() {
-        std::fflush(stdout);
-        std::fclose(stdout);
-        stdout = original_;
-    }
-    CapturedStdout(const CapturedStdout &) = delete;
-    auto operator=(const CapturedStdout &) -> CapturedStdout & = delete;
-
-    [[nodiscard]] auto content() const -> std::string {
-        // stdout is fully buffered while redirected to a file: flush so
-        // reads inside the capture scope see what runCli has printed.
-        std::fflush(stdout);
-        std::ifstream input(path_, std::ios::binary);
-        return {std::istreambuf_iterator<char>(input),
-                std::istreambuf_iterator<char>()};
-    }
-
-  private:
-    FILE *original_ = nullptr;
-    std::string path_;
-};
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) - (name, body) is the
 // same shape every config-writing helper in these suites uses.
@@ -305,7 +272,7 @@ TEST(Reports, CliListPrintsRows) {
         });
     }
 
-    CapturedStdout capture("list");
+    test_util::CapturedStdout capture("list");
     EXPECT_EQ(runCli({"--config", fixture.configPath, "calls", "list"}), 0);
     const auto output = capture.content();
     // Every column of both rows, pinned as the exact expected lines.
@@ -335,7 +302,7 @@ TEST(Reports, CliShowPrintsReport) {
         });
     }
 
-    CapturedStdout capture("show");
+    test_util::CapturedStdout capture("show");
     EXPECT_EQ(
         runCli({"--config", fixture.configPath, "calls", "show", "call-1"}), 0);
     const auto output = capture.content();

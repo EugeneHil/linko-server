@@ -15,6 +15,7 @@
 #include "linko/sha256.hpp"
 #include "server/cli.hpp"
 #include "server/store.hpp"
+#include "util/captured_stdout.hpp"
 #include "util/test_cert.hpp"
 
 namespace {
@@ -26,39 +27,6 @@ constexpr std::int64_t kTtlHoursMs = 2 * kHourMs;
 constexpr std::int64_t kPastTtlMs = 60 * kMsPerSecond;
 // UTF-8 upper-half block character, the QR output marker.
 constexpr const char *kQrBlock = "\xE2\x96\x80";
-
-// Redirects FILE* stdout into a temp file for the lifetime of this object
-// and restores it afterwards. runCli prints through stdout, so its output
-// is fully captured.
-class CapturedStdout {
-  public:
-    explicit CapturedStdout(const std::string &name) {
-        std::fflush(stdout);
-        path_ = std::string(::testing::TempDir()) + "cli-out-" + name + ".txt";
-        original_ = stdout;
-        stdout = test_util::openFile(path_, "w");
-    }
-    ~CapturedStdout() {
-        std::fflush(stdout);
-        std::fclose(stdout);
-        stdout = original_;
-    }
-    CapturedStdout(const CapturedStdout &) = delete;
-    auto operator=(const CapturedStdout &) -> CapturedStdout & = delete;
-
-    [[nodiscard]] auto content() const -> std::string {
-        // stdout is fully buffered while redirected to a file: flush so
-        // reads inside the capture scope see what runCli has printed.
-        std::fflush(stdout);
-        std::ifstream input(path_, std::ios::binary);
-        return {std::istreambuf_iterator<char>(input),
-                std::istreambuf_iterator<char>()};
-    }
-
-  private:
-    FILE *original_ = nullptr;
-    std::string path_;
-};
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) - (name, body) is the
 // same shape every config-writing helper in this suite uses.
@@ -148,7 +116,7 @@ TEST(Cli, UnknownCommandExits2) {
 
 TEST(Cli, InviteCreatePrintsLinkAndQr) {
     const CliFixture fixture("invite-link");
-    CapturedStdout capture("invite-link");
+    test_util::CapturedStdout capture("invite-link");
     EXPECT_EQ(
         runCli({"--config", fixture.configPath, "invite", "create", "--host",
                 "qrtest.example", "--port", "443", "--cert", fixture.certPath}),
@@ -165,7 +133,7 @@ TEST(Cli, InviteCreatePrintsLinkAndQr) {
 TEST(Cli, InviteCreateStoresHashOnly) {
     const CliFixture fixture("invite-hash");
     {
-        CapturedStdout capture("invite-hash");
+        test_util::CapturedStdout capture("invite-hash");
         EXPECT_EQ(runCli({"--config", fixture.configPath, "invite", "create",
                           "--host", "h", "--port", "443", "--cert",
                           fixture.certPath}),
@@ -184,7 +152,7 @@ TEST(Cli, InviteCreateStoresHashOnly) {
 TEST(Cli, InviteTtlFlagExpires) {
     const CliFixture fixture("invite-ttl");
     {
-        CapturedStdout capture("invite-ttl");
+        test_util::CapturedStdout capture("invite-ttl");
         EXPECT_EQ(runCli({"--config", fixture.configPath, "invite", "create",
                           "--ttl-hours", "2"}),
                   0);
@@ -212,7 +180,7 @@ TEST(Cli, UserListPrintsUsers) {
         static_cast<void>(
             store.registerDevice("anna", "hash-a1", systemNowMs()));
     }
-    CapturedStdout capture("user-list");
+    test_util::CapturedStdout capture("user-list");
     EXPECT_EQ(runCli({"--config", fixture.configPath, "user", "list"}), 0);
     EXPECT_NE(capture.content().find("anna"), std::string::npos);
 }
@@ -236,7 +204,7 @@ TEST(Cli, DeviceListShowsRevokedAndActive) {
     const CliFixture fixture("device-list");
     const auto activeId = populateTwoDevices(fixture.dbPath());
 
-    CapturedStdout capture("device-list");
+    test_util::CapturedStdout capture("device-list");
     EXPECT_EQ(
         runCli({"--config", fixture.configPath, "device", "list", "eugene"}),
         0);
@@ -250,7 +218,7 @@ TEST(Cli, DeviceRevokeMarksRevoked) {
     const CliFixture fixture("device-revoke");
     const auto activeId = populateTwoDevices(fixture.dbPath());
 
-    CapturedStdout capture("device-revoke");
+    test_util::CapturedStdout capture("device-revoke");
     EXPECT_EQ(runCli({"--config", fixture.configPath, "device", "revoke",
                       "eugene", std::to_string(activeId)}),
               0);
@@ -263,7 +231,7 @@ TEST(Cli, DeviceRevokeMarksRevoked) {
 
 TEST(Cli, DeviceRevokeBadIdExits2) {
     const CliFixture fixture("device-bad");
-    CapturedStdout capture("device-bad");
+    test_util::CapturedStdout capture("device-bad");
     EXPECT_EQ(runCli({"--config", fixture.configPath, "device", "revoke",
                       "eugene", "notanumber"}),
               2);
