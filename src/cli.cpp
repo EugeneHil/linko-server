@@ -41,6 +41,9 @@ constexpr int kExitError = 1;
 constexpr int kExitUsage = 2;
 constexpr int kDefaultInviteTtlHours = 24;
 constexpr std::size_t kInviteCodeBytes = 16;
+// The default `cert generate --out` directory: the paths config.example.json
+// ships (certs/server.crt, certs/server.key).
+constexpr const char *kDefaultCertDir = "certs";
 constexpr std::int64_t kSecondsPerHour = 3600;
 // The TTL cleanup cadence (Plan 3 Task 8): once at startup, then daily.
 constexpr int kCleanupIntervalHours = 24;
@@ -75,7 +78,11 @@ auto usage() -> int {
                "  calls list\n"
                "                Print stored end-of-call quality reports.\n"
                "  calls show <callId>\n"
-               "                Print the stored reports of one call.\n",
+               "                Print the stored reports of one call.\n"
+               "  cert generate [--out <dir>]\n"
+               "                Create a self-signed ECDSA P-256 certificate\n"
+               "                (CN=linko, valid 3650 days) and key; print\n"
+               "                the SPKI pin.\n",
                stderr);
     return kExitUsage;
 }
@@ -431,6 +438,79 @@ auto handleCallsCommand(const std::string &command,
     }
 }
 
+// The cert subcommand (Plan 3 Task 10). nullopt when `command` is not a
+// cert command at all - the caller falls through to usage(). Deliberately
+// never touches the config file: certificate generation must work on a
+// fresh VPS before any configuration exists. The pin is a public key
+// fingerprint, safe to print and to embed in invite links.
+auto handleCertCommand(const std::string &command,
+                       const std::vector<std::string> &arguments)
+    -> std::optional<int> {
+    if (command != "cert" || arguments.empty() ||
+        arguments.front() != "generate") {
+        return std::nullopt;
+    }
+    std::string outDir = kDefaultCertDir;
+    try {
+        outDir = optionValue(arguments, "--out").value_or(kDefaultCertDir);
+    } catch (const std::exception &) {
+        std::fputs("error: --out needs a value\n", stderr);
+        return kExitUsage;
+    }
+    try {
+        const auto paths = generateSelfSignedCert(outDir);
+        const std::string pin = spkiPinOfCertFile(paths.certFile);
+        std::fputs(("cert: " + paths.certFile + "\n").c_str(), stdout);
+        std::fputs(("key: " + paths.keyFile + "\n").c_str(), stdout);
+        std::fputs(("pin: " + pin + "\n").c_str(), stdout);
+        return kExitOk;
+    } catch (const std::exception &error) {
+        std::fprintf(stderr, "error: %s\n", error.what());
+        return kExitError;
+    }
+}
+
+// The config-backed administration subcommands (Plan 3 Task 3): invite
+// create, user list, device list/revoke. Every shape check happens before
+// loadConfig, so usage errors never depend on the config file existing.
+// nullopt when `command` is not one of them - the caller falls through to
+// usage().
+auto handleAdminCommand(const std::string &command,
+                        const std::vector<std::string> &arguments,
+                        const std::string &configPath) -> std::optional<int> {
+    const bool isInviteCreate = command == "invite" && !arguments.empty() &&
+                                arguments.front() == "create";
+    const bool isUserList = command == "user" && arguments.size() == 1 &&
+                            arguments.front() == "list";
+    const bool isDevice =
+        command == "device" && !arguments.empty() &&
+        (arguments.front() == "list" || arguments.front() == "revoke");
+    if (!isInviteCreate && !isUserList && !isDevice) {
+        return std::nullopt;
+    }
+    try {
+        const auto config = loadConfig(configPath);
+        if (isInviteCreate) {
+            return handleInviteCreate(
+                std::vector<std::string>(arguments.begin() + 1,
+                                         arguments.end()),
+                config);
+        }
+        if (isUserList) {
+            return handleUserList(config);
+        }
+        const std::vector<std::string> tail(arguments.begin() + 1,
+                                            arguments.end());
+        if (arguments.front() == "list") {
+            return handleDeviceList(tail, config);
+        }
+        return handleDeviceRevoke(tail, config);
+    } catch (const std::exception &error) {
+        std::fprintf(stderr, "error: %s\n", error.what());
+        return kExitError;
+    }
+}
+
 } // namespace
 
 auto runCli(int argc, char **argv) -> int {
@@ -458,52 +538,18 @@ auto runCli(int argc, char **argv) -> int {
         }
     }
 
-    // Validate the command shape before touching the config file: usage
-    // errors must not depend on a config file existing.
-    if (command == "invite" && !arguments.empty() &&
-        arguments.front() == "create") {
-        try {
-            const auto config = loadConfig(configPath);
-            return handleInviteCreate(
-                std::vector<std::string>(arguments.begin() + 1,
-                                         arguments.end()),
-                config);
-        } catch (const std::exception &error) {
-            std::fprintf(stderr, "error: %s\n", error.what());
-            return kExitError;
-        }
-    }
-    if (command == "user" && arguments.size() == 1 &&
-        arguments.front() == "list") {
-        try {
-            const auto config = loadConfig(configPath);
-            return handleUserList(config);
-        } catch (const std::exception &error) {
-            std::fprintf(stderr, "error: %s\n", error.what());
-            return kExitError;
-        }
-    }
-    if (command == "device" && !arguments.empty() &&
-        (arguments.front() == "list" || arguments.front() == "revoke")) {
-        try {
-            const auto config = loadConfig(configPath);
-            if (arguments.front() == "list") {
-                return handleDeviceList(
-                    std::vector<std::string>(arguments.begin() + 1,
-                                             arguments.end()),
-                    config);
-            }
-            return handleDeviceRevoke(
-                std::vector<std::string>(arguments.begin() + 1,
-                                         arguments.end()),
-                config);
-        } catch (const std::exception &error) {
-            std::fprintf(stderr, "error: %s\n", error.what());
-            return kExitError;
-        }
+    // The admin subcommands validate their shape inside the helper before
+    // touching the config file: usage errors must not depend on a config
+    // file existing.
+    if (const auto handled =
+            handleAdminCommand(command, arguments, configPath)) {
+        return *handled;
     }
     if (const auto handled =
             handleCallsCommand(command, arguments, configPath)) {
+        return *handled;
+    }
+    if (const auto handled = handleCertCommand(command, arguments)) {
         return *handled;
     }
     return usage();
