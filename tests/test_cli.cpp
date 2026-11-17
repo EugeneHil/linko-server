@@ -107,6 +107,23 @@ auto dbBytesIncludingWal(const std::string &dbPath) -> std::string {
     return readFileBytes(dbPath) + readFileBytes(dbPath + "-wal");
 }
 
+// One-line directory listing for failure diagnostics: on the Windows CI
+// runners the CLI-inserted invite row vanishes between the CLI connection
+// closing and the test reading it back (LNK-25); the listing shows whether
+// the database was created, where its bytes live and how large they are.
+auto listFiles(const std::string &dir) -> std::string {
+    std::string listing;
+    std::error_code error;
+    for (const auto &entry : std::filesystem::directory_iterator(dir, error)) {
+        listing += entry.path().filename().string() + ":" +
+                   std::to_string(entry.file_size(error)) + "B ";
+    }
+    if (error) {
+        listing += "[directory read failed: " + error.message() + "]";
+    }
+    return listing;
+}
+
 auto systemNowMs() -> std::int64_t {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::system_clock::now().time_since_epoch())
@@ -183,7 +200,9 @@ TEST(Cli, InviteCreateStoresHashOnly) {
         << "the plaintext invite code must never reach the database";
     EXPECT_NE(raw.find(linko::sha256Hex(
                   std::vector<std::uint8_t>(code.begin(), code.end()))),
-              std::string::npos);
+              std::string::npos)
+        << "data dir: " << listFiles(fixture.dataDir)
+        << "; raw bytes: " << raw.size();
 }
 
 TEST(Cli, InviteTtlFlagExpires) {
@@ -214,7 +233,8 @@ TEST(Cli, InviteTtlFlagExpires) {
             return systemNowMs() + kTtlHoursMs + kPastTtlMs;
         });
     EXPECT_EQ(store.consumeInvite(code, "someone"),
-              server::InviteResult::Expired);
+              server::InviteResult::Expired)
+        << "data dir: " << listFiles(fixture.dataDir);
 }
 
 TEST(Cli, UserListPrintsUsers) {
