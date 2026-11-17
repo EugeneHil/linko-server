@@ -74,9 +74,9 @@ class CapturedStdout {
         // \n line endings into \r\n, and every test that splits output at a
         // \n (the join link's code parameter) would pick up a trailing \r.
         int fileFd = kInvalidFileNo;
-        static_cast<void>(::_sopen_s(&fileFd, path.c_str(),
-                                     _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY,
-                                     _SH_DENYNO, _S_IREAD | _S_IWRITE));
+        static_cast<void>(::_sopen_s(
+            &fileFd, path.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY,
+            _SH_DENYNO, _S_IREAD | _S_IWRITE));
         const FileNo stdoutFd = 1;
 #else
         const int fileFd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC,
