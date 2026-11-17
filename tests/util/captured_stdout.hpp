@@ -68,9 +68,14 @@ class CapturedStdout {
 
     static auto redirectStdoutTo(const std::string &path) -> bool {
 #if defined(_WIN32)
-        const int fileFd =
-            ::_open(path.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_TEXT,
-                    _S_IREAD | _S_IWRITE);
+        // _open is deprecated (C4996, warnings are errors); _sopen_s is the
+        // sanctioned spelling and reports failures by setting the
+        // out-descriptor to -1.
+        int fileFd = kInvalidFileNo;
+        static_cast<void>(
+            ::_sopen_s(&fileFd, path.c_str(),
+                       _O_WRONLY | _O_CREAT | _O_TRUNC | _O_TEXT, _SH_DENYNO,
+                       _S_IREAD | _S_IWRITE));
         const FileNo stdoutFd = 1;
 #else
         const int fileFd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC,
