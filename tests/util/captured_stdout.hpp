@@ -70,10 +70,12 @@ class CapturedStdout {
 #if defined(_WIN32)
         // _open is deprecated (C4996, warnings are errors); _sopen_s is the
         // sanctioned spelling and reports failures by setting the
-        // out-descriptor to -1.
+        // out-descriptor to -1. Binary mode: text mode would turn the CLI's
+        // \n line endings into \r\n, and every test that splits output at a
+        // \n (the join link's code parameter) would pick up a trailing \r.
         int fileFd = kInvalidFileNo;
         static_cast<void>(::_sopen_s(&fileFd, path.c_str(),
-                                     _O_WRONLY | _O_CREAT | _O_TRUNC | _O_TEXT,
+                                     _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY,
                                      _SH_DENYNO, _S_IREAD | _S_IWRITE));
         const FileNo stdoutFd = 1;
 #else
