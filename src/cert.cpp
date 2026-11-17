@@ -4,7 +4,13 @@
 // - generation is expected to run on the VPS (docs/deploy.md).
 #include "server/crypto.hpp"
 
+#ifdef _WIN32
+#include <aclapi.h>
+#include <windows.h>
+#pragma comment(lib, "advapi32")
+#else
 #include <sys/stat.h>
+#endif
 
 #include <openssl/bn.h>
 #include <openssl/evp.h>
@@ -113,8 +119,21 @@ auto makeSelfSignedCert(EVP_PKEY *key) -> std::unique_ptr<X509, X509Deleter> {
     return certificate;
 }
 
+// MSVC deprecates std::fopen (C4996, and warnings are errors); fopen_s is
+// the sanctioned spelling there. Returns nullptr when the file cannot be
+// opened.
+auto openForWrite(const std::string &path) -> FILE * {
+#ifdef _WIN32
+    FILE *file = nullptr;
+    static_cast<void>(fopen_s(&file, path.c_str(), "wb"));
+    return file;
+#else
+    return std::fopen(path.c_str(), "wb");
+#endif
+}
+
 void writeCertificateFile(const std::string &path, X509 *certificate) {
-    FILE *file = std::fopen(path.c_str(), "wb");
+    FILE *file = openForWrite(path);
     if (file == nullptr) {
         throw std::runtime_error("cert: cannot write " + path);
     }
@@ -126,7 +145,7 @@ void writeCertificateFile(const std::string &path, X509 *certificate) {
 }
 
 void writeKeyFile(const std::string &path, EVP_PKEY *key) {
-    FILE *file = std::fopen(path.c_str(), "wb");
+    FILE *file = openForWrite(path);
     if (file == nullptr) {
         throw std::runtime_error("cert: cannot write " + path);
     }
@@ -151,7 +170,7 @@ void restrictKeyToOwner(const std::string &path) {
                               nullptr, nullptr, &descriptor) != ERROR_SUCCESS) {
         throw std::runtime_error("cert: cannot read the key owner of " + path);
     }
-    EXPLICIT_ACCESSW entry = {};
+    EXPLICIT_ACCESSW entry{};
     entry.grfAccessPermissions = GENERIC_ALL;
     entry.grfAccessMode = SET_ACCESS;
     entry.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;

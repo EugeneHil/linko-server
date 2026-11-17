@@ -13,11 +13,13 @@
 #include <boost/asio/ssl.hpp>
 #include <boost/beast.hpp>
 #include <boost/beast/ssl.hpp>
+#include <nlohmann/json.hpp>
 
 #include "linko/sha256.hpp"
 #include "server/cli.hpp"
 #include "server/http.hpp"
 #include "server/store.hpp"
+#include "util/captured_stdout.hpp"
 #include "util/test_cert.hpp"
 
 namespace beast = boost::beast;
@@ -136,48 +138,17 @@ auto httpsPost(const std::string &host, unsigned short port,
     return {static_cast<int>(response.result_int()), response.body()};
 }
 
-// Redirects FILE* stdout into a temp file for the lifetime of this object
-// and restores it afterwards. runCli prints through stdout, so its output
-// is fully captured.
-class CapturedStdout {
-  public:
-    explicit CapturedStdout(const std::string &name) {
-        std::fflush(stdout);
-        path_ =
-            std::string(::testing::TempDir()) + "reports-out-" + name + ".txt";
-        original_ = stdout;
-        stdout = std::fopen(path_.c_str(), "w");
-    }
-    ~CapturedStdout() {
-        std::fflush(stdout);
-        std::fclose(stdout);
-        stdout = original_;
-    }
-    CapturedStdout(const CapturedStdout &) = delete;
-    auto operator=(const CapturedStdout &) -> CapturedStdout & = delete;
-
-    [[nodiscard]] auto content() const -> std::string {
-        // stdout is fully buffered while redirected to a file: flush so
-        // reads inside the capture scope see what runCli has printed.
-        std::fflush(stdout);
-        std::ifstream input(path_, std::ios::binary);
-        return {std::istreambuf_iterator<char>(input),
-                std::istreambuf_iterator<char>()};
-    }
-
-  private:
-    FILE *original_ = nullptr;
-    std::string path_;
-};
-
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) - (name, body) is the
-// same shape every config-writing helper in these suites uses.
-auto writeTempConfig(const std::string &name, const std::string &dataDir)
-    -> std::string {
+auto writeTempConfig(
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (name, dataDir)
+    const std::string &name, const std::string &dataDir) -> std::string {
     const auto path = std::filesystem::path(::testing::TempDir()) /
                       ("linko-reports-" + name + ".json");
     std::ofstream output(path);
-    output << R"({"dataDir": ")" + dataDir + R"(", "port": 443})";
+    // nlohmann serializes the path with proper JSON escaping - a raw
+    // interpolation breaks on Windows, where the temp path contains
+    // backslashes ("C:\Users\..." is an invalid JSON escape).
+    const nlohmann::json config = {{"dataDir", dataDir}, {"port", 443}};
+    output << config.dump();
     output.close();
     return path.string();
 }
@@ -305,9 +276,14 @@ TEST(Reports, CliListPrintsRows) {
         });
     }
 
-    CapturedStdout capture("list");
-    EXPECT_EQ(runCli({"--config", fixture.configPath, "calls", "list"}), 0);
-    const auto output = capture.content();
+    int exitCode = -1;
+    std::string output;
+    {
+        test_util::CapturedStdout capture("list");
+        exitCode = runCli({"--config", fixture.configPath, "calls", "list"});
+        output = capture.content();
+    }
+    EXPECT_EQ(exitCode, 0);
     // Every column of both rows, pinned as the exact expected lines.
     const auto row1 = "call-1 anna " + std::to_string(kBaseMs) +
                       " duration=42 setupMs=7 candidate=relay "
@@ -335,10 +311,15 @@ TEST(Reports, CliShowPrintsReport) {
         });
     }
 
-    CapturedStdout capture("show");
-    EXPECT_EQ(
-        runCli({"--config", fixture.configPath, "calls", "show", "call-1"}), 0);
-    const auto output = capture.content();
+    int exitCode = -1;
+    std::string output;
+    {
+        test_util::CapturedStdout capture("show");
+        exitCode =
+            runCli({"--config", fixture.configPath, "calls", "show", "call-1"});
+        output = capture.content();
+    }
+    EXPECT_EQ(exitCode, 0);
     EXPECT_NE(output.find(kFullReport), std::string::npos)
         << "expected the stored report JSON in the output";
     EXPECT_EQ(output.find("host-z9"), std::string::npos)

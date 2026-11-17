@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <utility>
 #include <vector>
@@ -15,6 +16,7 @@
 #include "linko/sha256.hpp"
 #include "server/cli.hpp"
 #include "server/store.hpp"
+#include "util/captured_stdout.hpp"
 #include "util/test_cert.hpp"
 
 namespace {
@@ -27,47 +29,20 @@ constexpr std::int64_t kPastTtlMs = 60 * kMsPerSecond;
 // UTF-8 upper-half block character, the QR output marker.
 constexpr const char *kQrBlock = "\xE2\x96\x80";
 
-// Redirects FILE* stdout into a temp file for the lifetime of this object
-// and restores it afterwards. runCli prints through stdout, so its output
-// is fully captured.
-class CapturedStdout {
-  public:
-    explicit CapturedStdout(const std::string &name) {
-        std::fflush(stdout);
-        path_ = std::string(::testing::TempDir()) + "cli-out-" + name + ".txt";
-        original_ = stdout;
-        stdout = std::fopen(path_.c_str(), "w");
-    }
-    ~CapturedStdout() {
-        std::fflush(stdout);
-        std::fclose(stdout);
-        stdout = original_;
-    }
-    CapturedStdout(const CapturedStdout &) = delete;
-    auto operator=(const CapturedStdout &) -> CapturedStdout & = delete;
-
-    [[nodiscard]] auto content() const -> std::string {
-        // stdout is fully buffered while redirected to a file: flush so
-        // reads inside the capture scope see what runCli has printed.
-        std::fflush(stdout);
-        std::ifstream input(path_, std::ios::binary);
-        return {std::istreambuf_iterator<char>(input),
-                std::istreambuf_iterator<char>()};
-    }
-
-  private:
-    FILE *original_ = nullptr;
-    std::string path_;
-};
-
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) - (name, body) is the
-// same shape every config-writing helper in this suite uses.
-auto writeTempConfig(const std::string &name, const std::string &dataDir)
-    -> std::string {
+// (name, dataDir) is the same shape every config-writing helper in this
+// suite uses.
+auto writeTempConfig(
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) - see above; the
+    // note cannot follow the NOLINTNEXTLINE line (it would eat its scope).
+    const std::string &name, const std::string &dataDir) -> std::string {
     const auto path = std::filesystem::path(::testing::TempDir()) /
                       ("linko-cli-" + name + ".json");
     std::ofstream output(path);
-    output << R"({"dataDir": ")" + dataDir + R"(", "port": 443})";
+    // nlohmann serializes the path with proper JSON escaping - a raw
+    // interpolation breaks on Windows, where the temp path contains
+    // backslashes ("C:\Users\..." is an invalid JSON escape).
+    const nlohmann::json config = {{"dataDir", dataDir}, {"port", 443}};
+    output << config.dump();
     output.close();
     return path.string();
 }
@@ -132,6 +107,23 @@ auto dbBytesIncludingWal(const std::string &dbPath) -> std::string {
     return readFileBytes(dbPath) + readFileBytes(dbPath + "-wal");
 }
 
+// One-line directory listing for failure diagnostics: on the Windows CI
+// runners the CLI-inserted invite row vanishes between the CLI connection
+// closing and the test reading it back (LNK-25); the listing shows whether
+// the database was created, where its bytes live and how large they are.
+auto listFiles(const std::string &dir) -> std::string {
+    std::string listing;
+    std::error_code error;
+    for (const auto &entry : std::filesystem::directory_iterator(dir, error)) {
+        listing += entry.path().filename().string() + ":" +
+                   std::to_string(entry.file_size(error)) + "B ";
+    }
+    if (error) {
+        listing += "[directory read failed: " + error.message() + "]";
+    }
+    return listing;
+}
+
 auto systemNowMs() -> std::int64_t {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::system_clock::now().time_since_epoch())
@@ -146,61 +138,103 @@ TEST(Cli, UnknownCommandExits2) {
     EXPECT_EQ(runCli({"--config"}), 2);
 }
 
+// CapturedStdout redirects the descriptor under stdout for its scope, so
+// gtest failure text printed inside the scope would land in the capture
+// file and never reach the CI log. The pattern every capture-based test
+// follows: run the CLI and read the content inside the scope, assert
+// outside of it.
 TEST(Cli, InviteCreatePrintsLinkAndQr) {
     const CliFixture fixture("invite-link");
-    CapturedStdout capture("invite-link");
-    EXPECT_EQ(
-        runCli({"--config", fixture.configPath, "invite", "create", "--host",
-                "qrtest.example", "--port", "443", "--cert", fixture.certPath}),
-        0);
-    const auto output = capture.content();
+    int exitCode = -1;
+    std::string output;
+    {
+        test_util::CapturedStdout capture("invite-link");
+        exitCode = runCli({
+            "--config",
+            fixture.configPath,
+            "invite",
+            "create",
+            "--host",
+            "qrtest.example",
+            "--port",
+            "443",
+            "--cert",
+            fixture.certPath,
+        });
+        output = capture.content();
+    }
+    EXPECT_EQ(exitCode, 0);
     EXPECT_NE(output.find("linko://join?host=qrtest.example&port=443&pin="),
               std::string::npos)
         << output;
-    EXPECT_NE(output.find("&code="), std::string::npos);
+    EXPECT_NE(output.find("&code="), std::string::npos) << output;
     EXPECT_NE(output.find(kQrBlock), std::string::npos)
-        << "expected a terminal QR code in the output";
+        << "expected a terminal QR code in the output: " << output;
 }
 
 TEST(Cli, InviteCreateStoresHashOnly) {
     const CliFixture fixture("invite-hash");
+    int exitCode = -1;
+    std::string output;
     {
-        CapturedStdout capture("invite-hash");
-        EXPECT_EQ(runCli({"--config", fixture.configPath, "invite", "create",
-                          "--host", "h", "--port", "443", "--cert",
-                          fixture.certPath}),
-                  0);
-        const auto code = codeFromLink(capture.content());
-        ASSERT_FALSE(code.empty());
-        const auto raw = dbBytesIncludingWal(fixture.dbPath());
-        EXPECT_EQ(raw.find(code), std::string::npos)
-            << "the plaintext invite code must never reach the database";
-        EXPECT_NE(raw.find(linko::sha256Hex(
-                      std::vector<std::uint8_t>(code.begin(), code.end()))),
-                  std::string::npos);
+        test_util::CapturedStdout capture("invite-hash");
+        exitCode = runCli({
+            "--config",
+            fixture.configPath,
+            "invite",
+            "create",
+            "--host",
+            "h",
+            "--port",
+            "443",
+            "--cert",
+            fixture.certPath,
+        });
+        output = capture.content();
     }
+    EXPECT_EQ(exitCode, 0);
+    const auto code = codeFromLink(output);
+    ASSERT_FALSE(code.empty()) << output;
+    const auto raw = dbBytesIncludingWal(fixture.dbPath());
+    EXPECT_EQ(raw.find(code), std::string::npos)
+        << "the plaintext invite code must never reach the database";
+    EXPECT_NE(raw.find(linko::sha256Hex(
+                  std::vector<std::uint8_t>(code.begin(), code.end()))),
+              std::string::npos)
+        << "data dir: " << listFiles(fixture.dataDir)
+        << "; raw bytes: " << raw.size();
 }
 
 TEST(Cli, InviteTtlFlagExpires) {
     const CliFixture fixture("invite-ttl");
+    int exitCode = -1;
+    std::string output;
     {
-        CapturedStdout capture("invite-ttl");
-        EXPECT_EQ(runCli({"--config", fixture.configPath, "invite", "create",
-                          "--ttl-hours", "2"}),
-                  0);
-        const auto code = codeFromLink(capture.content());
-        ASSERT_FALSE(code.empty());
-
-        // A clock two hours and one minute past creation must see the invite
-        // expired - with the 24-hour default it would still be valid there.
-        server::Store store(
-            fixture.dbPath(), []() -> std::string { return "unused"; },
-            []() -> std::int64_t {
-                return systemNowMs() + kTtlHoursMs + kPastTtlMs;
-            });
-        EXPECT_EQ(store.consumeInvite(code, "someone"),
-                  server::InviteResult::Expired);
+        test_util::CapturedStdout capture("invite-ttl");
+        exitCode = runCli({
+            "--config",
+            fixture.configPath,
+            "invite",
+            "create",
+            "--ttl-hours",
+            "2",
+        });
+        output = capture.content();
     }
+    EXPECT_EQ(exitCode, 0);
+    const auto code = codeFromLink(output);
+    ASSERT_FALSE(code.empty()) << output;
+
+    // A clock two hours and one minute past creation must see the invite
+    // expired - with the 24-hour default it would still be valid there.
+    server::Store store(
+        fixture.dbPath(), []() -> std::string { return "unused"; },
+        []() -> std::int64_t {
+            return systemNowMs() + kTtlHoursMs + kPastTtlMs;
+        });
+    EXPECT_EQ(store.consumeInvite(code, "someone"),
+              server::InviteResult::Expired)
+        << "data dir: " << listFiles(fixture.dataDir);
 }
 
 TEST(Cli, UserListPrintsUsers) {
@@ -212,9 +246,15 @@ TEST(Cli, UserListPrintsUsers) {
         static_cast<void>(
             store.registerDevice("anna", "hash-a1", systemNowMs()));
     }
-    CapturedStdout capture("user-list");
-    EXPECT_EQ(runCli({"--config", fixture.configPath, "user", "list"}), 0);
-    EXPECT_NE(capture.content().find("anna"), std::string::npos);
+    int exitCode = -1;
+    std::string output;
+    {
+        test_util::CapturedStdout capture("user-list");
+        exitCode = runCli({"--config", fixture.configPath, "user", "list"});
+        output = capture.content();
+    }
+    EXPECT_EQ(exitCode, 0);
+    EXPECT_NE(output.find("anna"), std::string::npos) << output;
 }
 
 // Populates a store with two devices of one user: the first (older) one is
@@ -236,11 +276,15 @@ TEST(Cli, DeviceListShowsRevokedAndActive) {
     const CliFixture fixture("device-list");
     const auto activeId = populateTwoDevices(fixture.dbPath());
 
-    CapturedStdout capture("device-list");
-    EXPECT_EQ(
-        runCli({"--config", fixture.configPath, "device", "list", "eugene"}),
-        0);
-    const auto output = capture.content();
+    int exitCode = -1;
+    std::string output;
+    {
+        test_util::CapturedStdout capture("device-list");
+        exitCode = runCli(
+            {"--config", fixture.configPath, "device", "list", "eugene"});
+        output = capture.content();
+    }
+    EXPECT_EQ(exitCode, 0);
     EXPECT_NE(output.find(std::to_string(activeId) + " active"),
               std::string::npos)
         << output;
@@ -250,11 +294,22 @@ TEST(Cli, DeviceRevokeMarksRevoked) {
     const CliFixture fixture("device-revoke");
     const auto activeId = populateTwoDevices(fixture.dbPath());
 
-    CapturedStdout capture("device-revoke");
-    EXPECT_EQ(runCli({"--config", fixture.configPath, "device", "revoke",
-                      "eugene", std::to_string(activeId)}),
-              0);
-    EXPECT_NE(capture.content().find("revoked"), std::string::npos);
+    int exitCode = -1;
+    std::string output;
+    {
+        test_util::CapturedStdout capture("device-revoke");
+        exitCode = runCli({
+            "--config",
+            fixture.configPath,
+            "device",
+            "revoke",
+            "eugene",
+            std::to_string(activeId),
+        });
+        output = capture.content();
+    }
+    EXPECT_EQ(exitCode, 0);
+    EXPECT_NE(output.find("revoked"), std::string::npos) << output;
 
     server::Store store(fixture.dbPath(),
                         []() -> std::string { return "unused"; });
@@ -263,8 +318,17 @@ TEST(Cli, DeviceRevokeMarksRevoked) {
 
 TEST(Cli, DeviceRevokeBadIdExits2) {
     const CliFixture fixture("device-bad");
-    CapturedStdout capture("device-bad");
-    EXPECT_EQ(runCli({"--config", fixture.configPath, "device", "revoke",
-                      "eugene", "notanumber"}),
-              2);
+    int exitCode = -1;
+    {
+        test_util::CapturedStdout capture("device-bad");
+        exitCode = runCli({
+            "--config",
+            fixture.configPath,
+            "device",
+            "revoke",
+            "eugene",
+            "notanumber",
+        });
+    }
+    EXPECT_EQ(exitCode, 2);
 }

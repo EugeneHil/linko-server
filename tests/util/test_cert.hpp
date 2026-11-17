@@ -17,6 +17,19 @@
 
 namespace test_util {
 
+// MSVC deprecates fopen (C4996, and warnings are errors); fopen_s is the
+// sanctioned spelling there. Returns nullptr when the file cannot be
+// opened.
+inline auto openFile(const std::string &path, const char *mode) -> FILE * {
+#if defined(_WIN32)
+    FILE *file = nullptr;
+    static_cast<void>(fopen_s(&file, path.c_str(), mode));
+    return file;
+#else
+    return std::fopen(path.c_str(), mode);
+#endif
+}
+
 // Returns {certPemPath, keyPemPath} for a throwaway self-signed P-256 pair.
 inline auto makeEphemeralCert(const std::string &name)
     -> std::pair<std::string, std::string> {
@@ -48,11 +61,11 @@ inline auto makeEphemeralCert(const std::string &name)
         reinterpret_cast<const unsigned char *>("linko-test"), -1, -1, 0));
     static_cast<void>(X509_sign(certificate, pkey, EVP_sha256()));
 
-    if (FILE *certFile = std::fopen(certPath.c_str(), "wb")) {
+    if (FILE *certFile = openFile(certPath, "wb")) {
         static_cast<void>(PEM_write_X509(certFile, certificate));
         static_cast<void>(std::fclose(certFile));
     }
-    if (FILE *keyFile = std::fopen(keyPath.c_str(), "wb")) {
+    if (FILE *keyFile = openFile(keyPath, "wb")) {
         static_cast<void>(PEM_write_PrivateKey(keyFile, pkey, nullptr, nullptr,
                                                0, nullptr, nullptr));
         static_cast<void>(std::fclose(keyFile));

@@ -23,6 +23,8 @@
 
 #include "server/cli.hpp"
 #include "server/crypto.hpp"
+#include "util/captured_stdout.hpp"
+#include "util/test_cert.hpp"
 
 namespace fs = std::filesystem;
 
@@ -34,39 +36,6 @@ constexpr unsigned int kWorldReadableMode = 0644U;
 constexpr int kP256Bits = 256;
 constexpr int kCertValidityDays = 3650;
 constexpr std::size_t kCommonNameBufferBytes = 64;
-
-// Redirects FILE* stdout into a temp file for the lifetime of this object
-// and restores it afterwards. runCli prints through stdout, so its output
-// is fully captured.
-class CapturedStdout {
-  public:
-    explicit CapturedStdout(const std::string &name) {
-        std::fflush(stdout);
-        path_ = std::string(::testing::TempDir()) + "cert-out-" + name + ".txt";
-        original_ = stdout;
-        stdout = std::fopen(path_.c_str(), "w");
-    }
-    ~CapturedStdout() {
-        std::fflush(stdout);
-        std::fclose(stdout);
-        stdout = original_;
-    }
-    CapturedStdout(const CapturedStdout &) = delete;
-    auto operator=(const CapturedStdout &) -> CapturedStdout & = delete;
-
-    [[nodiscard]] auto content() const -> std::string {
-        // stdout is fully buffered while redirected to a file: flush so
-        // reads inside the capture scope see what runCli has printed.
-        std::fflush(stdout);
-        std::ifstream input(path_, std::ios::binary);
-        return {std::istreambuf_iterator<char>(input),
-                std::istreambuf_iterator<char>()};
-    }
-
-  private:
-    FILE *original_ = nullptr;
-    std::string path_;
-};
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) - argv layout is
 // (executable, arguments...).
@@ -181,11 +150,19 @@ TEST(Cert, IsSelfSignedP256) {
 TEST(Cert, PinPrinted) {
     const std::string outDir = certOutDir("pin");
     const std::string certPath = pairPath(outDir, "crt");
-    CapturedStdout capture("pin");
-    EXPECT_EQ(runCli({"cert", "generate", "--out", outDir}), 0);
+    // Assert outside the capture scope: gtest failure text printed inside
+    // it would land in the capture file and never reach the CI log.
+    int exitCode = -1;
+    std::string output;
+    {
+        test_util::CapturedStdout capture("pin");
+        exitCode = runCli({"cert", "generate", "--out", outDir});
+        output = capture.content();
+    }
     const std::string pin = server::spkiPinOfCertFile(certPath);
+    EXPECT_EQ(exitCode, 0);
     EXPECT_FALSE(pin.empty());
-    EXPECT_NE(capture.content().find("pin: " + pin), std::string::npos);
+    EXPECT_NE(output.find("pin: " + pin), std::string::npos) << output;
 }
 
 TEST(Cert, GenerateWithoutValueForOutExits2) {
