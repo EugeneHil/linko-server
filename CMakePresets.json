@@ -1,0 +1,117 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 28,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "macos",
+      "displayName": "linko-server macOS (Ninja, Homebrew deps)",
+      "description": "Development preset on macOS; Homebrew keg-only prefixes (openssl@3, sqlite) are hinted explicitly.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/macos",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BOOST_ROOT": "/opt/homebrew/opt/boost",
+        "OPENSSL_ROOT_DIR": "/opt/homebrew/opt/openssl@3",
+        "CMAKE_PREFIX_PATH": "/opt/homebrew/opt/openssl@3;/opt/homebrew/opt/sqlite;/opt/homebrew"
+      }
+    },
+    {
+      "name": "windows",
+      "displayName": "linko-server Windows (vcpkg manifest, auto-detected Visual Studio)",
+      "description": "Product preset for the Windows VPS and CI. The vcpkg toolchain resolves boost-beast, openssl and sqlite3 from the pinned manifest (vcpkg.json). No generator is pinned: CMake uses the most recent Visual Studio installed on the host (VS 2026 on current GitHub runners) - the same auto-detect lesson linko-core learned in Plan 2.",
+      "architecture": {
+        "value": "x64",
+        "strategy": "set"
+      },
+      "binaryDir": "${sourceDir}/build/windows",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      }
+    },
+    {
+      "name": "linux",
+      "displayName": "linko-server Linux (Ninja, dev only)",
+      "description": "Development-only preset for Linux hosts (unofficial, spec 3).",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "coverage",
+      "displayName": "linko-server coverage (macOS, llvm-cov)",
+      "description": "macOS coverage build with Clang profiling instrumentation, same scheme as linko-core's.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/coverage",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BOOST_ROOT": "/opt/homebrew/opt/boost",
+        "OPENSSL_ROOT_DIR": "/opt/homebrew/opt/openssl@3",
+        "CMAKE_PREFIX_PATH": "/opt/homebrew/opt/openssl@3;/opt/homebrew/opt/sqlite;/opt/homebrew",
+        "CMAKE_CXX_FLAGS": "-fprofile-instr-generate -fcoverage-mapping"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "macos",
+      "configurePreset": "macos"
+    },
+    {
+      "name": "windows",
+      "configurePreset": "windows",
+      "configuration": "Release"
+    },
+    {
+      "name": "linux",
+      "configurePreset": "linux"
+    },
+    {
+      "name": "coverage",
+      "configurePreset": "coverage"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "macos",
+      "configurePreset": "macos",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows",
+      "configurePreset": "windows",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux",
+      "configurePreset": "linux",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "coverage",
+      "configurePreset": "coverage",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "LLVM_PROFILE_FILE": "${sourceDir}/build/coverage/%p.profraw"
+      }
+    }
+  ]
+}

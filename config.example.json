@@ -1,0 +1,20 @@
+{
+  "bind": "0.0.0.0",
+  "port": 443,
+  "dataDir": "data",
+  "certFile": "certs/server.crt",
+  "keyFile": "certs/server.key",
+  "turnSecret": "CHANGE_ME_TURN_SECRET",
+  "publicHost": "localhost",
+  "turnUris": ["turn:localhost:3478?transport=udp", "turn:localhost:3478?transport=tcp"],
+  "limits": {
+    "maxFileBytes": 104857600,
+    "userQuotaBytes": 1073741824,
+    "fileTtlDays": 30,
+    "maxSocketsPerDevice": 1,
+    "envelopesPerMinute": 600,
+    "authFailsPerMinute": 10,
+    "idleTimeoutSec": 300,
+    "turnTtlSec": 3600
+  }
+}
