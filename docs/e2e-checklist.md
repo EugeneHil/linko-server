@@ -13,7 +13,7 @@ every release.
       `POST /api/v1/register 200` request lines.
 - [ ] `linko-server user list` prints both usernames (`eugene`, `anna`).
 - [ ] Each device finds the other through user search
-      (`GET /api/v1/users?q=... 200` request lines).
+      (`GET /api/v1/users?prefix=... 200` request lines).
 
 ## Item 2 - Offline delivery
 
