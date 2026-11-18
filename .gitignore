@@ -40,5 +40,13 @@ data/
 coverage/
 # --- end linko shared ignores ---
 
+# linko-server runtime config and TLS material (docs/deploy.md section 3):
+# they carry the TURN shared secret and the TLS key material, so keep them
+# out of git even if someone drops them inside the working tree. The deploy
+# runbook places them outside the repo tree (C:\linko\) - this is a net.
+config.json
+server.crt
+certs/
+
 # CTest artifacts
 Testing/
