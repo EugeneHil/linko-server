@@ -5,12 +5,22 @@ The server-side rows of the v0.1 acceptance scenario (design spec 10, items
 VPS owner verifies while the scenario runs. The full scenario runs before
 every release.
 
+Log evidence (items 1, 7, 9): the Windows service manager discards a
+service's stderr, so a service-mode run produces no readable request lines
+(docs/deploy.md section 8). Capture the request-line evidence from a
+console-mode run: `sc.exe stop LinkoServer`, then run the same command line
+(`linko-server.exe --config <path> run`) in a terminal while the scenario
+runs.
+
 ## Item 1 - Setup
 
-- [ ] `invite create` ran twice on the VPS, each link scanned exactly once
-      (docs/deploy.md step 7).
+- [ ] `invite create` ran twice on the VPS - one invite per user, not per
+      device (v0.1 allows one device per user) - and each link was pasted on
+      exactly one device (docs/deploy.md step 7; onboarding is paste-only in
+      v0.1, the terminal QR is decorative).
 - [ ] Both registrations show up in the server log as
-      `POST /api/v1/register 200` request lines.
+      `POST /api/v1/register 201` request lines (the handler answers
+      201 Created).
 - [ ] `linko-server user list` prints both usernames (`eugene`, `anna`).
 - [ ] Each device finds the other through user search
       (`GET /api/v1/users?prefix=... 200` request lines).
@@ -40,7 +50,8 @@ every release.
 ## Item 8 - Server failure mid-call
 
 - [ ] Stopping the service (`sc.exe stop LinkoServer`) during a call does
-      not stop media: coturn is a separate service and keeps relaying.
+      not stop media: coturn runs as a separate process (started per the
+      TURN runbook, see docs/deploy.md) and keeps relaying.
 - [ ] The hangup still completes via the peers' data channel while the
       signaling service is down.
 - [ ] After `sc.exe start LinkoServer` both apps reconnect on their backoff
@@ -50,8 +61,11 @@ every release.
 ## Item 9 - Analytics
 
 - [ ] Both calls of the session appear in `linko-server calls list` with
-      setup time, candidate type, RTT, loss and end reason.
+      duration, setup time (`setupMs`), candidate type and end reason - the
+      CLI prints only those fields; RTT and loss are read from the report
+      JSON that `calls show <callId>` prints.
 - [ ] `calls show <callId>` prints the stored reports of that call for both
-      sides.
+      sides, including RTT and loss.
 - [ ] The report POSTs appear in the log as
-      `POST /api/v1/calls/{callId} 200`.
+      `POST /api/v1/calls/{callId}/report 204` (the report endpoint answers
+      204 No Content).
