@@ -118,7 +118,7 @@ coturn's own port configuration must stay inside 49160-49200.
 
 ```powershell
 .\build\windows\Release\linko-server.exe --config C:\linko\config.json invite create --user eugene
-.\build\windows\Release\linko-server.exe --config C:\linko\config.json invite create --user anna
+.\build\windows\Release\linko-server.exe --config C:\linko\config.json invite create --user tatsiana
 ```
 
 The command prints the `linko://join?...` link with the certificate pin
@@ -127,7 +127,7 @@ plan cut #4). Copy the link **text** and paste it into the device's
 onboarding field; each invite code is single-use and expires in 24 h. v0.1
 allows one device per user (spec 4.5 - a new invite for the same username
 revokes that user's old device), so create one invite per **user**: the
-scenario needs two, `eugene` and `anna` (see the v0.1 acceptance scenario,
+scenario needs two, `eugene` and `tatsiana` (see the v0.1 acceptance scenario,
 [docs/e2e-checklist.md](e2e-checklist.md)).
 
 ## 8. Logs

@@ -21,7 +21,7 @@ runs.
 - [ ] Both registrations show up in the server log as
       `POST /api/v1/register 201` request lines (the handler answers
       201 Created).
-- [ ] `linko-server user list` prints both usernames (`eugene`, `anna`).
+- [ ] `linko-server user list` prints both usernames (`eugene`, `tatsiana`).
 - [ ] Each device finds the other through user search
       (`GET /api/v1/users?prefix=... 200` request lines).
 
