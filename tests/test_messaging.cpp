@@ -646,7 +646,8 @@ TEST(Messaging, DuplicateSendReturnsOriginalSeq) {
     // deliver: the sync replay returns the single row and the drain bounds
     // the window.
     bob.sendText(linko::serialize(wireEnvelope(
-        linko::kTypeMsgSync, linko::MsgSync{"alice", 0}.toBody())));
+        linko::kTypeMsgSync,
+        linko::MsgSync{server::conversationKey("alice", "bob"), 0}.toBody())));
     const auto drained = drainUntilPong(bob);
     EXPECT_EQ(countDelivers(drained, "m1"), 1);
 }
@@ -696,17 +697,20 @@ TEST(Messaging, AckForwardedAndWatermarksAdvance) {
     sendAndExpect(alice, &bob, "m1", "bob", "one");
     sendAndExpect(alice, &bob, "m2", "bob", "two");
 
+    // The body names the CONVERSATION (the canonical key, like the real
+    // client sends), not the peer's username.
+    const auto conversation = server::conversationKey("alice", "bob");
     bob.sendText(linko::serialize(wireEnvelope(
-        linko::kTypeMsgAckDelivered, linko::MsgAck{"alice", 2}.toBody())));
+        linko::kTypeMsgAckDelivered, linko::MsgAck{conversation, 2}.toBody())));
     const auto ackWire = waitFor(alice, typeIs(linko::kTypeMsgAckDelivered));
     ASSERT_FALSE(ackWire.empty());
     // The envelope is forwarded unchanged: same body the client sent.
     const auto ack = parseJson(ackWire);
-    EXPECT_EQ(ack["body"].value("conversation", ""), "alice");
+    EXPECT_EQ(ack["body"].value("conversation", ""), conversation);
     EXPECT_EQ(ack["body"].value("uptoSeq", 0), 2);
 
     bob.sendText(linko::serialize(wireEnvelope(
-        linko::kTypeMsgAckRead, linko::MsgAck{"alice", 2}.toBody())));
+        linko::kTypeMsgAckRead, linko::MsgAck{conversation, 2}.toBody())));
     ASSERT_FALSE(waitFor(alice, typeIs(linko::kTypeMsgAckRead)).empty());
 
     // Holder bob's watermarks for the alice conversation moved.
@@ -714,6 +718,33 @@ TEST(Messaging, AckForwardedAndWatermarksAdvance) {
         server::conversationKey("alice", "bob"), "bob", "alice");
     EXPECT_EQ(receipts.first, 2);
     EXPECT_EQ(receipts.second, 2);
+}
+
+TEST(Messaging, AckWithNonKeyConversationDropped) {
+    MessagingFixture fixture("ackdrop");
+    registerToken(fixture.store(), "alice", "token-alice");
+    registerToken(fixture.store(), "bob", "token-bob");
+    WsClient alice("token-alice", fixture.port());
+    WsClient bob("token-bob", fixture.port());
+
+    sendAndExpect(alice, &bob, "m1", "bob", "one");
+
+    // A bare username names no conversation: acks and syncs carry the
+    // canonical conversation key, anything else is dropped whole.
+    bob.sendText(linko::serialize(wireEnvelope(
+        linko::kTypeMsgAckDelivered, linko::MsgAck{"alice", 1}.toBody())));
+    bob.sendText(linko::serialize(wireEnvelope(
+        linko::kTypeMsgAckRead, linko::MsgAck{"alice", 1}.toBody())));
+
+    // The pong proves bob's session handled both acks: frames are read
+    // sequentially per connection, so nothing ack-shaped is still queued.
+    static_cast<void>(drainUntilPong(bob));
+
+    EXPECT_EQ(
+        fixture.store()
+            .receiptsOf(server::conversationKey("alice", "bob"), "bob", "alice")
+            .first,
+        0);
 }
 
 TEST(Messaging, ReceiptsNeverRegress) {
@@ -725,13 +756,14 @@ TEST(Messaging, ReceiptsNeverRegress) {
 
     sendAndExpect(alice, &bob, "m1", "bob", "one");
 
+    const auto conversation = server::conversationKey("alice", "bob");
     bob.sendText(linko::serialize(wireEnvelope(
-        linko::kTypeMsgAckDelivered, linko::MsgAck{"alice", 1}.toBody())));
+        linko::kTypeMsgAckDelivered, linko::MsgAck{conversation, 1}.toBody())));
     ASSERT_FALSE(waitFor(alice, typeIs(linko::kTypeMsgAckDelivered)).empty());
 
     // A stale ack (lower uptoSeq) is forwarded but moves nothing backwards.
     bob.sendText(linko::serialize(wireEnvelope(
-        linko::kTypeMsgAckDelivered, linko::MsgAck{"alice", 1}.toBody())));
+        linko::kTypeMsgAckDelivered, linko::MsgAck{conversation, 1}.toBody())));
     ASSERT_FALSE(waitFor(alice, typeIs(linko::kTypeMsgAckDelivered)).empty());
 
     const auto receipts = fixture.store().receiptsOf(
@@ -749,8 +781,9 @@ TEST(Messaging, SyncAfterSeq) {
     sendAndExpect(alice, nullptr, "m2", "bob", "two");
     sendAndExpect(alice, nullptr, "m3", "bob", "three");
 
-    alice.sendText(linko::serialize(
-        wireEnvelope(linko::kTypeMsgSync, linko::MsgSync{"bob", 1}.toBody())));
+    alice.sendText(linko::serialize(wireEnvelope(
+        linko::kTypeMsgSync,
+        linko::MsgSync{server::conversationKey("alice", "bob"), 1}.toBody())));
     // Everything after seq 1, in seq order; seq 1 itself is not resent.
     const auto seqs = deliverSeqs(drainUntilPong(alice));
     ASSERT_EQ(seqs.size(), 2U);
