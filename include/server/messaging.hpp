@@ -11,11 +11,14 @@
 //   seq/ts and stores nothing) and the online peer gets
 //   msg.deliver{message};
 // - msg.ack-delivered / msg.ack-read advance the sender's watermarks (as the
-//   holder) for the conversation named in the body and are forwarded
-//   unchanged to that counterpart, so the sender of the original messages
-//   learns the receipts;
+//   holder) for the conversation named in the body - the canonical
+//   conversation key (min\x1fmax); the ack is forwarded unchanged to the
+//   key's other member, so the sender of the original messages learns the
+//   receipts. Bodies that name anything but the sender's own two-part
+//   conversation key are dropped whole;
 // - msg.sync{conversation, afterSeq} replays one msg.deliver per stored
-//   message after afterSeq, in seq order;
+//   message after afterSeq, in seq order; the conversation is the canonical
+//   key, and a key the sender is not part of replays nothing;
 // - onConnect pushes, per conversation, every message above the user's
 //   delivered watermark, in seq order (at-least-once: an unacked delivery is
 //   redelivered on reconnect, clients dedup by id).
